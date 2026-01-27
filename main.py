@@ -101,37 +101,42 @@ O foco nunca deve ser a condenação, mas sim o arrependimento gerado pelo amor 
         raise RuntimeError("Gemini retornou resposta vazia.")
     return text.strip()
 
-def enviar_whatsapp_via_node(mensagem: str, group_id: str) -> None:
+def enviar_whatsapp_via_node(mensagem: str, group_id: str) -> bool:
     if not NODE_SENDER_PATH.exists():
         raise RuntimeError(f"Sender Node não encontrado em: {NODE_SENDER_PATH}")
 
     OUTBOX_PATH.write_text(mensagem, encoding="utf-8")
-    
+
     env = os.environ.copy()
-    env['NODE_TLS_REJECT_UNAUTHORIZED'] = '0'
+    env["NODE_OPTIONS"] = "--use-openssl-ca"
+    env.pop("NODE_TLS_REJECT_UNAUTHORIZED", None)
 
     result = subprocess.run(
         ["node", str(NODE_SENDER_PATH), group_id, str(OUTBOX_PATH)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         env=env,
-        timeout=200  # 3 minutos + margem
+        timeout=260
     )
 
+    stdout = result.stdout or ""
+    stderr = result.stderr or ""
+
     if result.returncode != 0:
-        # Se falhar por problema de rede, apenas loga e continua
-        if "Timeout" in result.stderr or "Erro de conexão" in result.stderr:
-            print("⚠️ Falha no envio (problema de rede). Mensagem salva em outbox.txt")
-            print(f"stderr: {result.stderr}")
-            return
-        
-        # Outros erros, lança exceção
+        if ("Timeout" in stderr) or ("Erro de conexão" in stderr) or ("QR refs" in stderr):
+            print("⚠️ Falha no envio (rede). Mensagem salva em outbox.txt")
+            print(f"stderr: {stderr}")
+            return False
+
         raise RuntimeError(
             "Falha ao enviar via Node.\n"
-            f"stdout:\n{result.stdout}\n\nstderr:\n{result.stderr}"
+            f"stdout:\n{stdout}\n\nstderr:\n{stderr}"
         )
-    else:
-        print("✅ Mensagem enviada via Node.js")
+
+    print("✅ Mensagem enviada via Node.js")
+    return True
     
 def verificar_autenticacao_node() -> bool:
     result = subprocess.run(
@@ -165,25 +170,28 @@ def job_diario() -> None:
 
         devocional = gerar_devocional(client)
 
-        texto_final = f"""Olá, Alysson 🙏
+        texto_final = f"""Olá, irmão ou irmã!🙏
 
 Hoje preparei uma palavra de Deus pra você:
 
 {devocional}
 
 Reserve um momento pra meditar.
-Deus é contigo. 🤍
+Deus é contigo.🤍
 """.strip()
 
-        enviar_whatsapp_via_node(texto_final, group_id)
+        ok = enviar_whatsapp_via_node(texto_final, group_id)
+        if not ok:
+            print("⚠️ Não gravei como enviado porque o WhatsApp falhou. Vai ficar pendente no outbox.txt")
+            return
 
         cursor.execute(
             "INSERT INTO devocionais (data, mensagem) VALUES (?, ?)",
             (hoje, texto_final)
         )
         conn.commit()
-
         print("✅ Devocional enviado com sucesso.")
+        
     finally:
         conn.close()
 
