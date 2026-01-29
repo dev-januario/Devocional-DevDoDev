@@ -1,20 +1,26 @@
 {
-  "type": "module",
-  "name": "devocional-dev-do-dev",
+  "name": "devocional-bot",
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
+    "start:dev": "npx nodemon",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "description": "",
+  "devDependencies": {
+    "@types/node": "^25.1.0",
+    "@types/qrcode-terminal": "^0.12.2",
+    "nodemon": "^3.1.11",
+    "rimraf": "^6.1.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  },
   "dependencies": {
     "@hapi/boom": "^10.0.1",
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
-    "dotenv": "^17.2.3",
-    "pino": "^10.3.0",
     "qrcode-terminal": "^0.12.0"
   }
 }

@@ -41,10 +41,12 @@ def ja_enviado_hoje(cursor: sqlite3.Cursor, hoje: str) -> bool:
     cursor.execute("SELECT 1 FROM devocionais WHERE data = ?", (hoje,))
     return cursor.fetchone() is not None
 
-def gerar_devocional(client: genai.Client) -> str:
+def gerar_devocional(client: genai.Client, data: str) -> str:
     response = client.models.generate_content(
         model="gemini-2.5-flash",
-        contents="""
+        contents=f"""
+Hoje é {data}. Escreva um devocional inédito para este dia.
+
 Você é um mentor cristão e escritor de devocionais, conhecido por sua sensibilidade, profundidade teológica e capacidade de traduzir verdades bíblicas para o coração de forma simples e emocionante.
 
 # Instruções de Conteúdo
@@ -56,7 +58,7 @@ Você é um mentor cristão e escritor de devocionais, conhecido por sua sensibi
 
 # Estrutura do Devocional
 1. [A PALAVRA]:
-   - Referência bíblica (ex: *Filipenses 4:6-7 (KJA)*)
+   - Referência bíblica
    - Versículos numerados no formato:
      6 - [texto do versículo]
      7 - [texto do versículo]
@@ -74,18 +76,18 @@ Você é um mentor cristão e escritor de devocionais, conhecido por sua sensibi
 # Formato de Saída
 NÃO inclua saudações ou despedidas. Apenas o conteúdo estruturado:
 
-[A PALAVRA]
+*[VERSÍCULOS]*
 
-**[Referência Bíblica] (Versão)**
+*[Referência Bíblica] (Versão)*
 
 [número] - [versículo]
 [número] - [versículo]
 
-[CONTEXTO]
+*[CONTEXTO]*
 
 [texto do contexto - máximo 8 linhas]
 
-[PARA PENSAR]
+*[PARA PENSAR]*
 
 1. [pergunta curta e direta - máximo 2 linhas]
 2. [pergunta curta e direta - máximo 2 linhas]
@@ -101,63 +103,14 @@ O foco nunca deve ser a condenação, mas sim o arrependimento gerado pelo amor 
         raise RuntimeError("Gemini retornou resposta vazia.")
     return text.strip()
 
-def enviar_whatsapp_via_node(mensagem: str, group_id: str) -> bool:
-    if not NODE_SENDER_PATH.exists():
-        raise RuntimeError(f"Sender Node não encontrado em: {NODE_SENDER_PATH}")
-
-    OUTBOX_PATH.write_text(mensagem, encoding="utf-8")
-
-    env = os.environ.copy()
-    env["NODE_OPTIONS"] = "--use-openssl-ca"
-    env.pop("NODE_TLS_REJECT_UNAUTHORIZED", None)
-
-    result = subprocess.run(
-        ["node", str(NODE_SENDER_PATH), group_id, str(OUTBOX_PATH)],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        env=env,
-        timeout=260
-    )
-
-    stdout = result.stdout or ""
-    stderr = result.stderr or ""
-
-    if result.returncode != 0:
-        if ("Timeout" in stderr) or ("Erro de conexão" in stderr) or ("QR refs" in stderr):
-            print("⚠️ Falha no envio (rede). Mensagem salva em outbox.txt")
-            print(f"stderr: {stderr}")
-            return False
-
-        raise RuntimeError(
-            "Falha ao enviar via Node.\n"
-            f"stdout:\n{stdout}\n\nstderr:\n{stderr}"
-        )
-
-    print("✅ Mensagem enviada via Node.js")
-    return True
-    
-def verificar_autenticacao_node() -> bool:
-    result = subprocess.run(
-        ["node", str(BASE_DIR / "check_auth.js")],
-        capture_output=True,
-        text=True
-    )
-    return result.returncode == 0
-
 def job_diario() -> None:
     group_id = require_env("GROUP_ID")
     api_key = require_env("GEMINI_API_KEY")
 
-    if not verificar_autenticacao_node():
-        print("❌ Autenticação do WhatsApp não configurada.")
-        print("Execute: node send_whatsapp.mjs --authenticate")
-        return
-
     client = genai.Client(api_key=api_key)
 
-    hoje = datetime.now().strftime("%Y-%m-%d")
+    hoje = "2026-01-17"
+    # hoje = datetime.now().strftime("%Y-%m-%d")
 
     conn = sqlite3.connect(str(DB_PATH))
     try:
@@ -168,9 +121,9 @@ def job_diario() -> None:
             print("⚠️ Devocional de hoje já enviado. Encerrando.")
             return
 
-        devocional = gerar_devocional(client)
+        devocional = gerar_devocional(client, hoje)
 
-        texto_final = f"""Olá, irmão ou irmã!🙏
+        texto_final = f"""Olá, irmãos e irmãs!🙏
 
 Hoje preparei uma palavra de Deus pra você:
 
@@ -180,10 +133,23 @@ Reserve um momento pra meditar.
 Deus é contigo.🤍
 """.strip()
 
-        ok = enviar_whatsapp_via_node(texto_final, group_id)
-        if not ok:
-            print("⚠️ Não gravei como enviado porque o WhatsApp falhou. Vai ficar pendente no outbox.txt")
-            return
+        OUTBOX_PATH.write_text(texto_final, encoding="utf-8")
+        print("✅ Mensagem salva em outbox.txt. Envie pelo index-send-message.ts!")
+
+        import time
+        import subprocess
+        import signal
+        import psutil
+        print("Abrindo terminal para enviar mensagem pelo bot...")
+        proc = subprocess.Popen([
+            "gnome-terminal",
+            f"--working-directory=/home/dev_januario/Área de Trabalho/Estudo/devocional-bot",
+            "--", "bash", "-c",
+            "source $NVM_DIR/nvm.sh && nvm use 20 && npm run start:dev & sleep 20 && exit"
+        ])
+        time.sleep(20)
+        proc.terminate()
+        print("Terminal encerrado após envio da mensagem.")
 
         cursor.execute(
             "INSERT INTO devocionais (data, mensagem) VALUES (?, ?)",
