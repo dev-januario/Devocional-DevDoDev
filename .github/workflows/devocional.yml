@@ -33,6 +33,11 @@ jobs:
           npm config set registry https://registry.npmjs.org/
           npm config get registry
 
+      - name: Reset registry
+        run: |
+            npm config delete registry
+            npm config set registry https://registry.npmjs.org/
+
       - name: Instalar dependências Node.js
         run: npm ci
 
