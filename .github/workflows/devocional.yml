@@ -28,8 +28,13 @@ jobs:
       - name: Instalar dependências Python
         run: pip install -r requirements.txt
 
+      - name: Forçar registry do npmjs
+        run: |
+          npm config set registry https://registry.npmjs.org/
+          npm config get registry
+
       - name: Instalar dependências Node.js
-        run: npm install
+        run: npm ci
 
       - name: Criar arquivo .env
         run: |
