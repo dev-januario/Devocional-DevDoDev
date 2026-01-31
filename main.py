@@ -1,12 +1,14 @@
 import os
 import sqlite3
 import subprocess
+import re
 from datetime import datetime
 from pathlib import Path
 
 from google import genai
 from dotenv import load_dotenv
 import ssl
+import time
 
 ssl._create_default_https_context = ssl._create_unverified_context
 
@@ -20,14 +22,25 @@ DB_PATH = BASE_DIR / "database.db"
 OUTBOX_PATH = BASE_DIR / "outbox.txt"
 NODE_SENDER_PATH = BASE_DIR / "send_whatsapp.mjs"
 
+
 def require_env(name: str) -> str:
     value = os.getenv(name)
     if not value:
         raise RuntimeError(f"Variável de ambiente ausente: {name}")
     return value
 
+
+def column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    cur = conn.cursor()
+    cur.execute(f"PRAGMA table_info({table})")
+    cols = [row[1] for row in cur.fetchall()]  # row[1] = name
+    return column in cols
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     cursor = conn.cursor()
+
+    # Cria tabela base (se não existir)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS devocionais (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -37,80 +50,128 @@ def init_db(conn: sqlite3.Connection) -> None:
     """)
     conn.commit()
 
+    if not column_exists(conn, "devocionais", "referencia"):
+        cursor.execute("ALTER TABLE devocionais ADD COLUMN referencia TEXT")
+        conn.commit()
+
+    cursor.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_devocionais_referencia_unique
+        ON devocionais(referencia)
+    """)
+    conn.commit()
+
+def versiculo_ja_usado(cursor: sqlite3.Cursor, referencia: str) -> bool:
+    cursor.execute("SELECT 1 FROM devocionais WHERE referencia = ?", (referencia,))
+    return cursor.fetchone() is not None
+
 def ja_enviado_hoje(cursor: sqlite3.Cursor, hoje: str) -> bool:
     cursor.execute("SELECT 1 FROM devocionais WHERE data = ?", (hoje,))
     return cursor.fetchone() is not None
 
-def gerar_devocional(client: genai.Client, data: str) -> str:
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=f"""
-Hoje é {data}. Escreva um devocional inédito para este dia.
+def extrair_referencia(texto: str) -> str:
+    for line in texto.splitlines():
+        line = line.strip()
 
-Você é um mentor cristão e escritor de devocionais, conhecido por sua sensibilidade, profundidade teológica e capacidade de traduzir verdades bíblicas para o coração de forma simples e emocionante.
+        m = re.match(r"^\*(.+?)\s*\(([^)]+)\)\*$", line)
+        if m:
+            ref = m.group(1).strip()
+            versao = m.group(2).strip()
+            if re.search(r"\d+\s*:\s*\d+", ref):
+                return f"{ref} ({versao})"
 
-# Instruções de Conteúdo
-1. Base Bíblica: Mostre a versão utilizada para o versículo, preferências: KJA, NVI e NVI+.
-2. Contextualização: Ao abordar um tema, não apresente apenas um versículo isolado. Se o texto fizer parte de uma narrativa ou ensinamento maior (ex: A Armadura de Deus, O Fruto do Espírito, As Bem-aventuranças), apresente o bloco de versículos completo para garantir a fidelidade ao contexto.
-3. Linguagem: O tom deve ser acolhedor, cheio de paz, poético e acessível. Evite termos excessivamente técnicos; fale como um amigo sábio.
-4. Impacto Emocional: Em seus comentários, busque tocar a alma. Use metáforas e reflexões que despertem sentimentos de esperança, consolo e a percepção do amor de Deus.
-5. Concisão: O contexto deve ter no máximo 8 linhas. As perguntas devem ser objetivas e diretas, com no máximo 2 linhas cada.
+        m2 = re.match(r"^\*\[\s*(.+?)\s*\]\s*\(\s*([^)]+)\s*\)\*$", line)
+        if m2:
+            ref = m2.group(1).strip()
+            versao = m2.group(2).strip()
+            if re.search(r"\d+\s*:\s*\d+", ref):
+                return f"{ref} ({versao})"
 
-# Estrutura do Devocional
-1. [A PALAVRA]:
-   - Referência bíblica
-   - Versículos numerados no formato:
-     6 - [texto do versículo]
-     7 - [texto do versículo]
+    raise RuntimeError("Não foi possível extrair a referência bíblica do texto.")
 
-2. [CONTEXTO]:
-   - Explicação histórica e espiritual do texto
-   - MÁXIMO 8 linhas
-   - Tom acolhedor e poético
+def gerar_devocional(client: genai.Client, cursor: sqlite3.Cursor, data: str) -> tuple[str, str]:
+    for tentativa in range(8):
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=f"""
+        Hoje é {data}. Escreva um devocional cristão inédito e completo para este dia.
 
-3. [PARA PENSAR]:
-   - 3 perguntas reflexivas
-   - Cada pergunta com NO MÁXIMO 1 linha
-   - Diretas e impactantes
+        Você é um teólogo, pastor e escritor de devocionais profundamente sensível à voz do Espírito Santo. Seu dom é traduzir a verdade bíblica em reflexões que revigoram a alma, trazendo paz, esperança e uma clara percepção do amor e da fidelidade de Deus. Suas palavras são como água fresca para o sedento.
 
-# Formato de Saída
-NÃO inclua saudações ou despedidas. Apenas o conteúdo estruturado:
+        # **OBJETIVO PRINCIPAL:**
+        Criar um devocional que seja um verdadeiro encontro com Deus. Que o leitor termine a leitura sentindo-se mais leve, consolado, encorajado e com uma fé mais sólida. Foque nos frutos do Espírito: amor, alegria, paz, paciência, bondade, fidelidade, mansidão e domínio próprio.
 
-*[VERSÍCULOS]*
+        # **INSTRUÇÕES DE CONTEÚDO E ESTRUTURA (SIGA À RISCA):**
 
-*[Referência Bíblica] (Versão)*
+        1.  **BASE BÍBLICA - AGORA COM CONTEXTO:**
+            *   **NÃO ESCOLHA APENAS UM VERSÍCULO ISOLADO.**
+            *   Escolha uma **PASSAGEM COERENTE** (máx. 6 versículos) que forme uma unidade de pensamento completa. A passagem deve conter um ensinamento sólido, uma promessa ou uma verdade sobre o caráter de Deus.
+            *   Para isso, **sempre considere o contexto imediato**. Por exemplo, em vez de Filipenses 4:13 sozinho, use Filipenses 4:10-13. Em vez de Mateus 18:20 sozinho, use Mateus 18:15-20.
+            *   O objetivo é que a passagem escolhida, por si só, transmita a mensagem completa sem risco de má interpretação por falta de contexto.
+            *   **Mostre a versão utilizada.** Preferências: KJA, NVI e NVI+.
 
-[número] - [versículo]
-[número] - [versículo]
+        2.  **FORMATO DE SAÍDA (NÃO ADICIONE SAUDAÇÕES, TÍTULOS OU DESPEDIDAS):**
+            *   Comece com: `*[VERSÍCULOS]*`
+            *   Pule uma linha.
+            *   Em seguida, a linha da referência **EXATAMENTE** assim:
+                `*NOME_DO_LIVRO CAP:VERSO_INICIAL-VERSO_FINAL (VERSÃO)*`
+                Exemplo: `*Filipenses 4:10-13 (NVI)*`
+            *   Pule uma linha.
+            *   Liste os versículos da passagem completa, cada um em uma linha, no formato:
+                `número - texto do versículo`
 
-*[CONTEXTO]*
+            *   **AGORA, A SEÇÃO CRÍTICA:**
+                Após os versículos, escreva **OBRIGATORIAMENTE**:
+                `*[CONTEXTO]*`
+                *   Pule uma linha.
+                Em seguida, escreva o texto desta seção, que **DEVE**:
+                - Ter entre **45 e 60 palavras** (conte rigorosamente). [Aumentei o limite para caber a análise do contexto]
+                - Ser um **ÚNICO parágrafo contínuo**, sem quebras de linha, listas ou marcadores.
+                - **Explicar, em uma ou duas frases, a situação ou o tema principal do capítulo ou episódio bíblico do qual a passagem faz parte.** Em seguida, fazer uma **reflexão teológica profunda** sobre a verdade central que a passagem completa revela.
+                - Ter linguagem **poética, objetiva e direta ao coração**. Conduza o leitor a sentir a verdade, não apenas a entendê-la.
+                - **NUNCA ultrapassar 60 palavras.**
 
-[texto do contexto - máximo 8 linhas]
+            *   Finalize com: `*[PARA PENSAR]*`
+            *   Pule uma linha.
+            *   liste 3 perguntas curtas, íntimas e instigantes que ajudem o leitor a aplicar a verdade da **passagem completa** em sua vida interior.
 
-*[PARA PENSAR]*
+        # **TOM E ABORDAGEM:**
+        - **Teológico e Professor:** Seja didático sem ser acadêmico. Transmita a profundidade da Palavra com clareza. **A interpretação deve ser fiel ao contexto do livro e da passagem.**
+        - **Acolhedor e Poético:** Use metáforas belas e imagens que toquem a alma (ex: "Deus é o oleiro que nos forma com cuidado", "Sua graça é como um rio que não seca").
+        - **Foco no Amor de Deus:** A mensagem central deve sempre ser o caráter amoroso, fiel e presente de Deus. **Evite completamente tom de condenação ou culpa.**
+        - **Revigorante:** As palavras devem trazer ânimo, como um respiro profundo de ar puro para o espírito.
 
-1. [pergunta curta e direta - máximo 2 linhas]
-2. [pergunta curta e direta - máximo 2 linhas]
-3. [pergunta curta e direta - máximo 2 linhas]
+        # **RESTRIÇÃO FINAL:**
+        O devocional deve fluir como uma unidade: **Passagem Bíblica (com contexto) -> Explicação do Contexto Mais Ample -> Reflexão Teológica -> Perguntas para interiorização.** Cada parte deve se conectar perfeitamente, mostrando como a verdade emerge naturalmente do texto em seu ambiente original.
+            """.strip(),
+        )
 
-# Restrição Importante
-O foco nunca deve ser a condenação, mas sim o arrependimento gerado pelo amor e o desejo de ser mais parecido com Cristo.
-        """.strip()
-    )
+        text = getattr(response, "text", None)
+        if not text:
+            raise RuntimeError("Gemini retornou resposta vazia.")
 
-    text = getattr(response, "text", None)
-    if not text:
-        raise RuntimeError("Gemini retornou resposta vazia.")
-    return text.strip()
+        text = text.strip()
+
+        # Debug opcional: mostra início do texto
+        print("=== TEXTO GERADO PELO GEMINI (INÍCIO) ===")
+        print("\n".join(text.splitlines()[:25]))
+        print("=== TEXTO GERADO PELO GEMINI (FIM) ===")
+
+        referencia = extrair_referencia(text)
+
+        if versiculo_ja_usado(cursor, referencia):
+            print(f"⚠️ Versículo repetido: {referencia}. Tentando outro ({tentativa + 1}/8)...")
+            continue
+
+        return text, referencia
+
+    raise RuntimeError("Não consegui gerar um devocional com referência inédita após várias tentativas.")
 
 def job_diario() -> None:
-    group_id = require_env("GROUP_ID")
+    require_env("GROUP_ID")
     api_key = require_env("GEMINI_API_KEY")
 
     client = genai.Client(api_key=api_key)
-
-    hoje = "2026-01-17"
-    # hoje = datetime.now().strftime("%Y-%m-%d")
+    hoje = datetime.now().strftime("%Y-%m-%d")
 
     conn = sqlite3.connect(str(DB_PATH))
     try:
@@ -121,7 +182,7 @@ def job_diario() -> None:
             print("⚠️ Devocional de hoje já enviado. Encerrando.")
             return
 
-        devocional = gerar_devocional(client, hoje)
+        devocional, referencia = gerar_devocional(client, cursor, hoje)
 
         texto_final = f"""Olá, irmãos e irmãs!🙏
 
@@ -134,30 +195,36 @@ Deus é contigo.🤍
 """.strip()
 
         OUTBOX_PATH.write_text(texto_final, encoding="utf-8")
-        print("✅ Mensagem salva em outbox.txt. Envie pelo index-send-message.ts!")
+        print("✅ Mensagem salva em outbox.txt")
 
-        import time
-        import subprocess
-        import signal
-        import psutil
-        print("Abrindo terminal para enviar mensagem pelo bot...")
-        proc = subprocess.Popen([
-            "gnome-terminal",
-            f"--working-directory=/home/dev_januario/Área de Trabalho/Estudo/devocional-bot",
-            "--", "bash", "-c",
-            "source $NVM_DIR/nvm.sh && nvm use 20 && npm run start:dev & sleep 20 && exit"
-        ])
-        time.sleep(20)
-        proc.terminate()
-        print("Terminal encerrado após envio da mensagem.")
-
+        # **NOVIDADE: Execução direta do Node.js**
+        print("Enviando mensagem pelo bot...")
+        
+        # Caminho absoluto para evitar problemas
+        node_script = BASE_DIR / "index-send-message.js"
+        
+        # Executa o Node.js diretamente
+        result = subprocess.run(
+            ["node", str(node_script)],
+            capture_output=True,
+            text=True,
+            timeout=60  # timeout de 60 segundos
+        )
+        
+        if result.returncode == 0:
+            print("✅ Mensagem enviada com sucesso!")
+        else:
+            print(f"❌ Erro ao enviar mensagem: {result.stderr}")
+        
+        # Salva no banco de dados
         cursor.execute(
-            "INSERT INTO devocionais (data, mensagem) VALUES (?, ?)",
-            (hoje, texto_final)
+            "INSERT INTO devocionais (data, referencia, mensagem) VALUES (?, ?, ?)",
+            (hoje, referencia, texto_final)
         )
         conn.commit()
-        print("✅ Devocional enviado com sucesso.")
-        
+
+        print(f"✅ Devocional registrado com sucesso. Ref: {referencia}")
+
     finally:
         conn.close()
 

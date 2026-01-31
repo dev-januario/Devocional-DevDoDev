@@ -1,3 +1,6 @@
 .env
-/node_modules
-/auth_info_baileys
+__pycache__/
+*.pyc
+*.db
+outbox.txt
+node_modules/
