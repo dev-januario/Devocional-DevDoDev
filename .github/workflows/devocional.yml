@@ -51,14 +51,14 @@ jobs:
 
       - name: Upload do banco de dados (opcional, para backup)
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: database
           path: database.db
 
       - name: Upload da pasta auth_info_baileys atualizada (opcional)
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: auth_info_baileys
           path: auth_info_baileys/
