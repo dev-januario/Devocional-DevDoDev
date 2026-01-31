@@ -20,7 +20,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "database.db"
 OUTBOX_PATH = BASE_DIR / "outbox.txt"
-NODE_SENDER_PATH = BASE_DIR / "send_whatsapp.mjs"
+NODE_SENDER_PATH = BASE_DIR / "index-send-message.ts"
 
 
 def require_env(name: str) -> str:
@@ -201,7 +201,7 @@ Deus é contigo.🤍
         print("Enviando mensagem pelo bot...")
         
         # Caminho absoluto para evitar problemas
-        node_script = BASE_DIR / "index-send-message.js"
+        node_script = BASE_DIR / "index-send-message.ts"
         
         # Executa o Node.js diretamente
         result = subprocess.run(
