@@ -205,12 +205,13 @@ Deus é contigo.🤍
         
         # Executa o Node.js diretamente
         result = subprocess.run(
-            ["node", str(node_script)],
+            ["npx", "tsx", str(NODE_SENDER_PATH)],
             capture_output=True,
             text=True,
-            timeout=60  # timeout de 60 segundos
+            timeout=60,
+            cwd=str(BASE_DIR),
         )
-        
+                
         if result.returncode == 0:
             print("✅ Mensagem enviada com sucesso!")
         else:
