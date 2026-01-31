@@ -59,6 +59,13 @@ jobs:
       - name: Executar script Python
         run: python main.py
 
+      - name: Upload do outbox.txt (opcional, para backup)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: outbox
+          path: outbox.txt
+
       - name: Upload do banco de dados (opcional, para backup)
         if: always()
         uses: actions/upload-artifact@v4
