@@ -50,40 +50,28 @@ jobs:
           elif [[ "${GITHUB_REF_NAME}" == "development" ]]; then
             echo "GROUP_ID=${{ secrets.GROUP_ID_DEV }}" >> $GITHUB_ENV
           else
-            # fallback (feature/*, etc.)
             echo "GROUP_ID=${{ secrets.GROUP_ID_DEV }}" >> $GITHUB_ENV
           fi
 
           echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> $GITHUB_ENV
-
-          echo "Branch detectada: ${GITHUB_REF_NAME}"
-          echo "GROUP_ID definido? (não vou printar valor por segurança)"
 
       - name: Gerar .env
         shell: bash
         run: |
           echo "GROUP_ID=${GROUP_ID}" > .env
           echo "GEMINI_API_KEY=${GEMINI_API_KEY}" >> .env
-          echo "--- Debug ---"
-          # Printa as chaves sem expor os valores
           cat .env | sed 's/=.*/=***/'
 
-      - name: Rodar devocional
-        shell: bash
-        run: |
-          python main.py
-
-      - name: Criar pasta auth_info_baileys (se existir secret)
+      - name: Criar pasta auth_info_baileys
         run: |
           if [ -n "${{ secrets.AUTH_INFO_BAILEYS }}" ]; then
             mkdir -p auth_info_baileys
-            # O secret deve ser um tar.gz em base64
             echo "${{ secrets.AUTH_INFO_BAILEYS }}" | base64 --decode | tar -xz -C auth_info_baileys
           else
-            echo "Secret AUTH_INFO_BAILEYS não encontrado. O bot tentará autenticar via QR, mas falhará."
+            echo "Secret AUTH_INFO_BAILEYS não encontrado."
           fi
 
-      - name: Baixar database.zip do último run (se existir)
+      - name: Baixar database.zip do último run
         uses: dawidd6/action-download-artifact@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -96,12 +84,27 @@ jobs:
         run: |
           if [ -f database.zip ]; then
             unzip -o database.zip
+            echo "database.zip extraído."
+          else
+            echo "Nenhum database.zip encontrado. Primeira execução?"
           fi
 
       - name: Executar script Python
         run: python main.py
 
-      - name: Upload do outbox.txt (backup)
+      # ↓ STEP ADICIONADO: empacota o banco após a execução
+      - name: Empacotar database.zip
+        run: |
+          # Ajuste o nome do arquivo/pasta do seu banco aqui
+          if [ -f database.db ]; then
+            zip database.zip database.db
+            echo "database.zip criado."
+          else
+            echo "ATENÇÃO: database.db não encontrado. Nada foi empacotado."
+            ls -la  # debug
+          fi
+
+      - name: Upload do outbox.txt
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -109,7 +112,7 @@ jobs:
           path: outbox.txt
           if-no-files-found: ignore
 
-      - name: Upload do banco
+      - name: Upload do database
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -117,13 +120,7 @@ jobs:
           path: database.zip
           if-no-files-found: warn
 
-      - name: Upload do banco
-        uses: actions/upload-artifact@v4
-        with:
-          name: database
-          path: database.zip
-
-      - name: Upload da pasta auth_info_baileys atualizada (opcional)
+      - name: Upload da pasta auth_info_baileys
         if: always()
         uses: actions/upload-artifact@v4
         with:
