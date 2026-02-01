@@ -1,7 +1,7 @@
-import makeWASocket, { DisconnectReason, useMultiFileAuthState } from '@whiskeysockets/baileys';
-import { Boom } from '@hapi/boom';
-import { readFileSync } from 'fs';
-import * as path from 'path';
+import makeWASocket, { DisconnectReason, useMultiFileAuthState } from '@whiskeysockets/baileys'
+import { Boom } from '@hapi/boom'
+import qrcode from 'qrcode-terminal'
+import { readFileSync } from 'fs'
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
@@ -10,13 +10,18 @@ async function connectToWhatsApp() {
 
     const sock = makeWASocket({
         auth: state,
-        printQRInTerminal: false,
+        printQRInTerminal: true,
     });
 
     let resolved = false;
 
     sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect } = update;
+        const { connection, lastDisconnect, qr } = update
+
+        if (qr) {
+            console.log('📲 Escaneia o QR abaixo com o WhatsApp:')
+            qrcode.generate(qr, { small: true })
+        }
 
         if (connection === 'close') {
             const shouldReconnect = (lastDisconnect?.error as Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
@@ -32,7 +37,8 @@ async function connectToWhatsApp() {
 
             try {
                 const mensagem = readFileSync('outbox.txt', 'utf-8');
-                const groupId = process.env.GROUP_ID || '120363424073386097@g.us';
+                // const groupId = process.env.GROUP_ID || '120363424073386097@g.us';
+                const groupId = '5516991753984@s.whatsapp.net'
 
                 await sock.sendMessage(groupId, { text: mensagem });
                 console.log('✅ Mensagem enviada com sucesso!');
@@ -48,12 +54,6 @@ async function connectToWhatsApp() {
                 console.error('❌ Erro ao enviar mensagem:', err);
                 process.exit(1);
             }
-        }
-
-        if (update.qr) {
-            console.error('❌ QR Code detectado - Autenticação necessária');
-            console.error('Execute localmente primeiro para gerar auth_info_baileys');
-            process.exit(1);
         }
     });
 
