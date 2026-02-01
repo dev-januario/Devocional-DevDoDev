@@ -37,8 +37,7 @@ async function connectToWhatsApp() {
 
             try {
                 const mensagem = readFileSync('outbox.txt', 'utf-8');
-                // const groupId = process.env.GROUP_ID || '120363424073386097@g.us';
-                const groupId = '5516991753984@s.whatsapp.net'
+                const groupId = process.env.GROUP_ID || '120363424073386097@g.us';
 
                 await sock.sendMessage(groupId, { text: mensagem });
                 console.log('✅ Mensagem enviada com sucesso!');
