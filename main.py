@@ -9,6 +9,7 @@ from google import genai
 from dotenv import load_dotenv
 import ssl
 import time
+import hashlib
 
 ssl._create_default_https_context = ssl._create_unverified_context
 
@@ -22,13 +23,18 @@ DB_PATH = BASE_DIR / "database.db"
 OUTBOX_PATH = BASE_DIR / "outbox.txt"
 NODE_SENDER_PATH = BASE_DIR / "index-send-message.ts"
 
-
 def require_env(name: str) -> str:
     value = os.getenv(name)
     if not value:
         raise RuntimeError(f"Variável de ambiente ausente: {name}")
     return value
 
+def hash_texto(s: str) -> str:
+    return hashlib.sha256(s.strip().encode("utf-8")).hexdigest()
+
+def hash_ja_usado(cursor: sqlite3.Cursor, hash_msg: str) -> bool:
+    cursor.execute("SELECT 1 FROM devocionais WHERE hash_mensagem = ?", (hash_msg,))
+    return cursor.fetchone() is not None
 
 def column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
     cur = conn.cursor()
@@ -36,11 +42,9 @@ def column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
     cols = [row[1] for row in cur.fetchall()]  # row[1] = name
     return column in cols
 
-
 def init_db(conn: sqlite3.Connection) -> None:
     cursor = conn.cursor()
 
-    # Cria tabela base (se não existir)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS devocionais (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -54,9 +58,17 @@ def init_db(conn: sqlite3.Connection) -> None:
         cursor.execute("ALTER TABLE devocionais ADD COLUMN referencia TEXT")
         conn.commit()
 
+    if not column_exists(conn, "devocionais", "hash_mensagem"):
+        cursor.execute("ALTER TABLE devocionais ADD COLUMN hash_mensagem TEXT")
+        conn.commit()
+
     cursor.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS idx_devocionais_referencia_unique
         ON devocionais(referencia)
+    """)
+    cursor.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_devocionais_hash_unique
+        ON devocionais(hash_mensagem)
     """)
     conn.commit()
 
@@ -162,6 +174,11 @@ def gerar_devocional(client: genai.Client, cursor: sqlite3.Cursor, data: str) ->
             print(f"⚠️ Versículo repetido: {referencia}. Tentando outro ({tentativa + 1}/8)...")
             continue
 
+        hash_msg = hash_texto(text)
+        if hash_ja_usado(cursor, hash_msg):
+            print(f"⚠️ Texto/contexto repetido (hash). Tentando outro ({tentativa + 1}/8)...")
+            continue
+
         return text, referencia
 
     raise RuntimeError("Não consegui gerar um devocional com referência inédita após várias tentativas.")
@@ -173,7 +190,10 @@ def job_diario() -> None:
     client = genai.Client(api_key=api_key)
     hoje = datetime.now().strftime("%Y-%m-%d")
 
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(DB_PATH), timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+
     try:
         init_db(conn)
         cursor = conn.cursor()
@@ -218,11 +238,16 @@ Deus é contigo.🤍
             print(f"❌ Erro ao enviar mensagem: {result.stderr}")
         
         # Salva no banco de dados
-        cursor.execute(
-            "INSERT INTO devocionais (data, referencia, mensagem) VALUES (?, ?, ?)",
-            (hoje, referencia, texto_final)
-        )
-        conn.commit()
+        hash_msg = hash_texto(devocional)
+
+        try:
+            cursor.execute(
+                "INSERT INTO devocionais (data, referencia, mensagem, hash_mensagem) VALUES (?, ?, ?, ?)",
+                (hoje, referencia, texto_final, hash_msg)
+            )
+            conn.commit()
+        except sqlite3.IntegrityError:
+            print("⚠️ Já existia registro pra essa data/referência/hash. Não inseri de novo.")
 
         print(f"✅ Devocional registrado com sucesso. Ref: {referencia}")
 
