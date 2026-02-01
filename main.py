@@ -13,7 +13,7 @@ import hashlib
 
 ssl._create_default_https_context = ssl._create_unverified_context
 
-load_dotenv()
+load_dotenv(override=False)
 
 GROUP_ID = os.getenv("GROUP_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")

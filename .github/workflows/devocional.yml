@@ -59,11 +59,19 @@ jobs:
           echo "Branch detectada: ${GITHUB_REF_NAME}"
           echo "GROUP_ID definido? (não vou printar valor por segurança)"
 
-      - name: Gerar .env (opcional)
+      - name: Gerar .env
         shell: bash
         run: |
           echo "GROUP_ID=${GROUP_ID}" > .env
           echo "GEMINI_API_KEY=${GEMINI_API_KEY}" >> .env
+          echo "--- Debug ---"
+          # Printa as chaves sem expor os valores
+          cat .env | sed 's/=.*/=***/'
+
+      - name: Rodar devocional
+        shell: bash
+        run: |
+          python main.py
 
       - name: Criar pasta auth_info_baileys (se existir secret)
         run: |
