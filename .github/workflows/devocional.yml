@@ -40,17 +40,30 @@ jobs:
       - name: Instalar dependências Node.js
         run: npm ci
 
-      - name: Definir GROUP_ID baseado na branch
+      - name: Definir envs por branch
+        shell: bash
         run: |
+          echo "BRANCH=${GITHUB_REF_NAME}" >> $GITHUB_ENV
+
           if [[ "${GITHUB_REF_NAME}" == "main" ]]; then
-            echo "GROUP_ID=${{ secrets.GROUP_ID_MAIN }}" >> .env
+            echo "GROUP_ID=${{ secrets.GROUP_ID_MAIN }}" >> $GITHUB_ENV
           elif [[ "${GITHUB_REF_NAME}" == "development" ]]; then
-            echo "GROUP_ID=${{ secrets.GROUP_ID_DEV }}" >> .env
+            echo "GROUP_ID=${{ secrets.GROUP_ID_DEV }}" >> $GITHUB_ENV
           else
-            echo "GROUP_ID=${{ secrets.GROUP_ID_DEV }}" >> .env
+            # fallback (feature/*, etc.)
+            echo "GROUP_ID=${{ secrets.GROUP_ID_DEV }}" >> $GITHUB_ENV
           fi
 
-          echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> .env
+          echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> $GITHUB_ENV
+
+          echo "Branch detectada: ${GITHUB_REF_NAME}"
+          echo "GROUP_ID definido? (não vou printar valor por segurança)"
+
+      - name: Gerar .env (opcional)
+        shell: bash
+        run: |
+          echo "GROUP_ID=${GROUP_ID}" > .env
+          echo "GEMINI_API_KEY=${GEMINI_API_KEY}" >> .env
 
       - name: Criar pasta auth_info_baileys (se existir secret)
         run: |
@@ -80,7 +93,7 @@ jobs:
       - name: Executar script Python
         run: python main.py
 
-      - name: Upload do outbox.txt (opcional, para backup)
+      - name: Upload do outbox.txt (backup)
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -88,9 +101,13 @@ jobs:
           path: outbox.txt
           if-no-files-found: ignore
 
-      - name: Zipar database.db
-        run: |
-          zip -r database.zip database.db || true
+      - name: Upload do banco
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: database
+          path: database.zip
+          if-no-files-found: warn
 
       - name: Upload do banco
         uses: actions/upload-artifact@v4

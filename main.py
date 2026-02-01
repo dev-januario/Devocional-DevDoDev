@@ -220,9 +220,6 @@ Deus é contigo.🤍
         # **NOVIDADE: Execução direta do Node.js**
         print("Enviando mensagem pelo bot...")
         
-        # Caminho absoluto para evitar problemas
-        node_script = BASE_DIR / "index-send-message.ts"
-        
         # Executa o Node.js diretamente
         result = subprocess.run(
             ["npx", "tsx", str(NODE_SENDER_PATH)],
