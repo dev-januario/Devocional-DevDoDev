@@ -1,8 +1,8 @@
-name: Enviar Devocional Diário
+name: Devocional - Dev Do Dev - Envio Diário
 
 on:
   schedule:
-    - cron: '30 9 * * *'
+    - cron: '39 9 * * *'
   workflow_dispatch:
 
 permissions:

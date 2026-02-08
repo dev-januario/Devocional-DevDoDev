@@ -1,0 +1,205 @@
+name: Resetar Banco de Dados
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmacao:
+        description: 'Digite "CONFIRMO" para resetar o banco de dados'
+        required: true
+        type: string
+      tipo_reset:
+        description: 'O que você deseja resetar?'
+        required: true
+        type: choice
+        options:
+          - 'Apenas banco de dados (database.db)'
+          - 'Banco + autenticação WhatsApp'
+          - 'Tudo (banco + auth + outbox)'
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  resetar-banco:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Verificar confirmação
+        run: |
+          if [[ "${{ github.event.inputs.confirmacao }}" != "CONFIRMO" ]]; then
+            echo "❌ ERRO: Você precisa digitar 'CONFIRMO' para prosseguir."
+            echo "Você digitou: '${{ github.event.inputs.confirmacao }}'"
+            exit 1
+          fi
+          echo "✅ Confirmação recebida. Prosseguindo com o reset..."
+
+      - name: Checkout do código
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configurar Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Baixar database.zip atual (backup)
+        uses: dawidd6/action-download-artifact@v4
+        continue-on-error: true
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          workflow: devocional.yml
+          name: database
+          path: ./backup
+          if_no_artifact_found: warn
+
+      - name: Criar backup com timestamp
+        continue-on-error: true
+        run: |
+          if [ -f ./backup/database.zip ]; then
+            TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+            mkdir -p backups
+            cp ./backup/database.zip "backups/database_backup_${TIMESTAMP}.zip"
+            echo "✅ Backup criado: database_backup_${TIMESTAMP}.zip"
+          else
+            echo "⚠️ Nenhum database.zip encontrado para backup."
+          fi
+
+      - name: Criar novo banco de dados vazio
+        run: |
+          cat > create_empty_db.py << 'EOF'
+          import sqlite3
+          from pathlib import Path
+          
+          DB_PATH = Path("database.db")
+          
+          # Remove banco antigo se existir
+          if DB_PATH.exists():
+              DB_PATH.unlink()
+              print("🗑️ Banco de dados antigo removido.")
+          
+          # Cria novo banco vazio com estrutura
+          conn = sqlite3.connect(str(DB_PATH))
+          cursor = conn.cursor()
+          
+          cursor.execute("""
+              CREATE TABLE IF NOT EXISTS devocionais (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  data TEXT UNIQUE,
+                  mensagem TEXT,
+                  referencia TEXT,
+                  hash_mensagem TEXT,
+                  livro TEXT,
+                  capitulo INTEGER,
+                  verso_inicial INTEGER,
+                  verso_final INTEGER
+              )
+          """)
+          
+          cursor.execute("""
+              CREATE UNIQUE INDEX IF NOT EXISTS idx_devocionais_hash_unique
+              ON devocionais(hash_mensagem)
+          """)
+          
+          conn.commit()
+          conn.close()
+          
+          print("✅ Novo banco de dados criado com sucesso!")
+          print(f"📊 Tamanho: {DB_PATH.stat().st_size} bytes")
+          EOF
+          
+          python create_empty_db.py
+
+      - name: Resetar autenticação WhatsApp (se solicitado)
+        if: contains(github.event.inputs.tipo_reset, 'auth')
+        run: |
+          echo "🗑️ Removendo dados de autenticação do WhatsApp..."
+          # Aqui você pode adicionar lógica para limpar o secret AUTH_INFO_BAILEYS
+          # Nota: Secrets não podem ser deletados via Actions, precisará fazer manual
+          echo "⚠️ ATENÇÃO: Você precisará re-escanear o QR Code do WhatsApp na próxima execução!"
+          echo "⚠️ Para limpar completamente, delete o secret AUTH_INFO_BAILEYS manualmente em:"
+          echo "   Settings → Secrets and variables → Actions → AUTH_INFO_BAILEYS"
+
+      - name: Limpar outbox.txt (se solicitado)
+        if: contains(github.event.inputs.tipo_reset, 'Tudo')
+        run: |
+          echo "" > outbox.txt
+          echo "🗑️ outbox.txt limpo."
+
+      - name: Empacotar novo database.zip
+        run: |
+          zip database.zip database.db
+          echo "📦 Novo database.zip criado."
+          ls -lh database.zip
+
+      - name: Verificar conteúdo do novo banco
+        run: |
+          cat > verify_db.py << 'EOF'
+          import sqlite3
+          
+          conn = sqlite3.connect("database.db")
+          cursor = conn.cursor()
+          
+          cursor.execute("SELECT COUNT(*) FROM devocionais")
+          count = cursor.fetchone()[0]
+          
+          print(f"📊 Registros no novo banco: {count}")
+          
+          cursor.execute("PRAGMA table_info(devocionais)")
+          print("\n📋 Estrutura da tabela:")
+          for row in cursor.fetchall():
+              print(f"  - {row[1]} ({row[2]})")
+          
+          conn.close()
+          EOF
+          
+          python verify_db.py
+
+      - name: Upload do backup (se existir)
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: backup-database
+          path: backups/
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Upload do novo database.zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: database
+          path: database.zip
+          if-no-files-found: error
+
+      - name: Resumo da operação
+        run: |
+          echo "================================================"
+          echo "✅ RESET CONCLUÍDO COM SUCESSO!"
+          echo "================================================"
+          echo ""
+          echo "📋 O que foi feito:"
+          echo "  ✓ Banco de dados resetado (0 registros)"
+          
+          if [[ "${{ github.event.inputs.tipo_reset }}" == *"auth"* ]]; then
+            echo "  ✓ Autenticação WhatsApp marcada para reset"
+          fi
+          
+          if [[ "${{ github.event.inputs.tipo_reset }}" == *"Tudo"* ]]; then
+            echo "  ✓ outbox.txt limpo"
+          fi
+          
+          echo ""
+          echo "📦 Próximos passos:"
+          echo "  1. O próximo devocional será o primeiro registro"
+          echo "  2. Não haverá verificação de versículos repetidos"
+          
+          if [[ "${{ github.event.inputs.tipo_reset }}" == *"auth"* ]]; then
+            echo "  3. ⚠️ Você precisará re-escanear o QR Code do WhatsApp"
+            echo "     Para isso, delete manualmente o secret AUTH_INFO_BAILEYS"
+          fi
+          
+          echo ""
+          echo "💾 Backup disponível em 'backup-database' artifact (30 dias)"
+          echo "================================================"

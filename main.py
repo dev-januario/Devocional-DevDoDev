@@ -2,6 +2,7 @@ import os
 import sqlite3
 import subprocess
 import re
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -17,10 +18,12 @@ load_dotenv(override=False)
 
 GROUP_ID = os.getenv("GROUP_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+TEST_MODE = os.getenv("TEST_MODE", "0") == "1"
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "database.db"
 OUTBOX_PATH = BASE_DIR / "outbox.txt"
+SEND_STATUS_PATH = BASE_DIR / "send_status.json"
 NODE_SENDER_PATH = BASE_DIR / "index-send-message.ts"
 
 def require_env(name: str) -> str:
@@ -39,7 +42,7 @@ def hash_ja_usado(cursor: sqlite3.Cursor, hash_msg: str) -> bool:
 def column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
     cur = conn.cursor()
     cur.execute(f"PRAGMA table_info({table})")
-    cols = [row[1] for row in cur.fetchall()]  # row[1] = name
+    cols = [row[1] for row in cur.fetchall()]
     return column in cols
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -61,99 +64,290 @@ def init_db(conn: sqlite3.Connection) -> None:
     if not column_exists(conn, "devocionais", "hash_mensagem"):
         cursor.execute("ALTER TABLE devocionais ADD COLUMN hash_mensagem TEXT")
         conn.commit()
+    
+    if not column_exists(conn, "devocionais", "livro"):
+        cursor.execute("ALTER TABLE devocionais ADD COLUMN livro TEXT")
+        conn.commit()
+    
+    if not column_exists(conn, "devocionais", "capitulo"):
+        cursor.execute("ALTER TABLE devocionais ADD COLUMN capitulo INTEGER")
+        conn.commit()
+    
+    if not column_exists(conn, "devocionais", "verso_inicial"):
+        cursor.execute("ALTER TABLE devocionais ADD COLUMN verso_inicial INTEGER")
+        conn.commit()
+    
+    if not column_exists(conn, "devocionais", "verso_final"):
+        cursor.execute("ALTER TABLE devocionais ADD COLUMN verso_final INTEGER")
+        conn.commit()
 
-    cursor.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_devocionais_referencia_unique
-        ON devocionais(referencia)
-    """)
     cursor.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS idx_devocionais_hash_unique
         ON devocionais(hash_mensagem)
     """)
     conn.commit()
 
-def versiculo_ja_usado(cursor: sqlite3.Cursor, referencia: str) -> bool:
-    cursor.execute("SELECT 1 FROM devocionais WHERE referencia = ?", (referencia,))
-    return cursor.fetchone() is not None
+def parsear_referencia(ref: str) -> dict:
+    """
+    Extrai livro, capítulo, verso inicial e final de uma referência.
+    Ex: 'Filipenses 4:4-7 (NVI)' -> {'livro': 'Filipenses', 'cap': 4, 'v_ini': 4, 'v_fim': 7}
+    """
+    # Remove a versão entre parênteses
+    ref_limpa = re.sub(r'\s*\([^)]+\)\s*$', '', ref).strip()
+    
+    # Padrão: LIVRO CAP:VERSO ou LIVRO CAP:VERSO-VERSO
+    padrao = r'^(.+?)\s+(\d+)\s*:\s*(\d+)(?:\s*-\s*(\d+))?'
+    m = re.match(padrao, ref_limpa)
+    
+    if not m:
+        return None
+    
+    livro = m.group(1).strip()
+    capitulo = int(m.group(2))
+    verso_inicial = int(m.group(3))
+    verso_final = int(m.group(4)) if m.group(4) else verso_inicial
+    
+    return {
+        'livro': livro,
+        'capitulo': capitulo,
+        'verso_inicial': verso_inicial,
+        'verso_final': verso_final
+    }
+
+def ha_sobreposicao(cursor: sqlite3.Cursor, referencia: str) -> bool:
+    """
+    Verifica se algum versículo da nova referência já foi usado anteriormente.
+    Retorna True se houver sobreposição.
+    """
+    dados = parsear_referencia(referencia)
+    if not dados:
+        return False
+    
+    # Busca todos os registros do mesmo livro e capítulo
+    cursor.execute("""
+        SELECT verso_inicial, verso_final 
+        FROM devocionais 
+        WHERE livro = ? AND capitulo = ?
+    """, (dados['livro'], dados['capitulo']))
+    
+    registros = cursor.fetchall()
+    
+    for v_ini, v_fim in registros:
+        if v_ini is None or v_fim is None:
+            continue
+            
+        # Verifica se há interseção entre os intervalos
+        novo_ini = dados['verso_inicial']
+        novo_fim = dados['verso_final']
+        
+        # Há sobreposição se:
+        # - O novo começo está dentro do intervalo antigo, OU
+        # - O novo fim está dentro do intervalo antigo, OU
+        # - O novo intervalo contém completamente o antigo
+        if (v_ini <= novo_ini <= v_fim or 
+            v_ini <= novo_fim <= v_fim or
+            (novo_ini <= v_ini and novo_fim >= v_fim)):
+            return True
+    
+    return False
 
 def ja_enviado_hoje(cursor: sqlite3.Cursor, hoje: str) -> bool:
     cursor.execute("SELECT 1 FROM devocionais WHERE data = ?", (hoje,))
     return cursor.fetchone() is not None
 
 def extrair_referencia(texto: str) -> str:
-    for line in texto.splitlines():
+    linhas = texto.splitlines()
+    encontrou_versiculos = False
+    
+    for i, line in enumerate(linhas):
+        line_original = line
         line = line.strip()
+        
+        # Marca que encontrou a seção de versículos (com ou sem asteriscos)
+        if line in ("*[VERSÍCULOS]*", "[VERSÍCULOS]", "*[VERSICULOS]*", "[VERSICULOS]"):
+            encontrou_versiculos = True
+            continue
+        
+        # Se já passou por [VERSÍCULOS], procura a referência nas próximas linhas
+        if encontrou_versiculos:
+            # Padrão 1: *Livro Cap:Verso-Verso (Versão)*
+            m = re.match(r"^\*(.+?)\s*\(([^)]+)\)\*$", line)
+            if m:
+                ref = m.group(1).strip()
+                versao = m.group(2).strip()
+                if re.search(r"\d+\s*:\s*\d+", ref):
+                    return f"{ref} ({versao})"
+            
+            # Padrão 2: Livro Cap:Verso-Verso (Versão) [sem asteriscos]
+            m2 = re.match(r"^(.+?)\s+(\d+)\s*:\s*(\d+(?:\s*-\s*\d+)?)\s*\(([^)]+)\)\s*$", line)
+            if m2:
+                livro = m2.group(1).strip()
+                cap = m2.group(2).strip()
+                versos = m2.group(3).strip()
+                versao = m2.group(4).strip()
+                return f"{livro} {cap}:{versos} ({versao})"
+            
+            # Padrão 3: *[Livro Cap:Verso-Verso] (Versão)*
+            m3 = re.match(r"^\*\[\s*(.+?)\s*\]\s*\(\s*([^)]+)\s*\)\*$", line)
+            if m3:
+                ref = m3.group(1).strip()
+                versao = m3.group(2).strip()
+                if re.search(r"\d+\s*:\s*\d+", ref):
+                    return f"{ref} ({versao})"
+            
+            # Se chegou numa linha que parece ser versículo (começa com número - texto)
+            # então a referência não foi encontrada, continua procurando
+            if re.match(r"^\d+\s*-\s*.+", line):
+                continue
 
-        m = re.match(r"^\*(.+?)\s*\(([^)]+)\)\*$", line)
-        if m:
-            ref = m.group(1).strip()
-            versao = m.group(2).strip()
-            if re.search(r"\d+\s*:\s*\d+", ref):
-                return f"{ref} ({versao})"
+    raise RuntimeError("Não foi possível extrair a referência bíblica do texto. Verifique se está no formato: Livro Cap:Verso-Verso (Versão) logo após [VERSÍCULOS]")
 
-        m2 = re.match(r"^\*\[\s*(.+?)\s*\]\s*\(\s*([^)]+)\s*\)\*$", line)
-        if m2:
-            ref = m2.group(1).strip()
-            versao = m2.group(2).strip()
-            if re.search(r"\d+\s*:\s*\d+", ref):
-                return f"{ref} ({versao})"
+def validar_formato_devocional(texto: str) -> tuple[bool, str]:
+    """
+    Valida se o devocional está no formato correto.
+    Retorna (válido: bool, mensagem_erro: str)
+    """
+    linhas = texto.splitlines()
+    
+    # 1. Deve começar com [VERSÍCULOS] ou *[VERSÍCULOS]*
+    tem_versiculos = False
+    for line in linhas[:5]:
+        line_clean = line.strip()
+        if line_clean in ("*[VERSÍCULOS]*", "[VERSÍCULOS]", "*[VERSICULOS]*", "[VERSICULOS]"):
+            tem_versiculos = True
+            break
+    
+    if not tem_versiculos:
+        return False, "Falta a seção [VERSÍCULOS] no início"
+    
+    # 2. Deve ter apenas UMA referência bíblica (não múltiplas traduções)
+    referencias_encontradas = []
+    for line in linhas:
+        line = line.strip()
+        # Procura padrões como: *Romanos 9:14-18 (NVI)* ou Romanos 9:14-18 (NVI)
+        if re.match(r"^\*?[A-Za-zÀ-ú\s]+\d+:\d+(-\d+)?\s*\([^)]+\)\*?$", line):
+            referencias_encontradas.append(line)
+    
+    if len(referencias_encontradas) == 0:
+        return False, "Nenhuma referência bíblica encontrada"
+    
+    if len(referencias_encontradas) > 1:
+        return False, f"Múltiplas traduções detectadas! Encontrei {len(referencias_encontradas)} referências: {', '.join(referencias_encontradas)}. Use apenas UMA tradução!"
+    
+    # 3. Deve ter a seção [CONTEXTO] ou *[CONTEXTO]*
+    tem_contexto = False
+    for line in linhas:
+        line_clean = line.strip()
+        if line_clean in ("*[CONTEXTO]*", "[CONTEXTO]"):
+            tem_contexto = True
+            break
+    
+    if not tem_contexto:
+        return False, "Falta a seção [CONTEXTO]"
+    
+    # 4. Deve ter a seção [PARA PENSAR] ou *[PARA PENSAR]*
+    tem_pensar = False
+    for line in linhas:
+        line_clean = line.strip()
+        if line_clean in ("*[PARA PENSAR]*", "[PARA PENSAR]"):
+            tem_pensar = True
+            break
+    
+    if not tem_pensar:
+        return False, "Falta a seção [PARA PENSAR]"
+    
+    return True, "OK"
 
-    raise RuntimeError("Não foi possível extrair a referência bíblica do texto.")
+def normalizar_formato(texto: str) -> str:
+    """
+    Normaliza o formato do devocional, adicionando asteriscos onde faltam.
+    Garante que as seções e referências estejam no formato padrão.
+    """
+    linhas = texto.splitlines()
+    linhas_normalizadas = []
+    
+    for line in linhas:
+        line_stripped = line.strip()
+        
+        # Normaliza seções: [ALGO] → *[ALGO]*
+        if line_stripped in ("[VERSÍCULOS]", "[VERSICULOS]"):
+            linhas_normalizadas.append("*[VERSÍCULOS]*")
+        elif line_stripped in ("[CONTEXTO]",):
+            linhas_normalizadas.append("*[CONTEXTO]*")
+        elif line_stripped in ("[PARA PENSAR]",):
+            linhas_normalizadas.append("*[PARA PENSAR]*")
+        # Normaliza referência bíblica sem asteriscos: Livro 1:1-2 (NVI) → *Livro 1:1-2 (NVI)*
+        elif re.match(r"^[A-Za-zÀ-ú\s]+\d+:\d+(-\d+)?\s*\([^)]+\)$", line_stripped):
+            linhas_normalizadas.append(f"*{line_stripped}*")
+        else:
+            linhas_normalizadas.append(line)
+    
+    return "\n".join(linhas_normalizadas)
 
 def gerar_devocional(client: genai.Client, cursor: sqlite3.Cursor, data: str) -> tuple[str, str]:
     for tentativa in range(8):
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3-pro-preview",
             contents=f"""
-        Hoje é {data}. Escreva um devocional cristão inédito e completo para este dia.
+            Hoje é {data}. Com base na data e no direcionamento abaixo, escreva um devocional cristão inédito, completo e transformador.
 
-        Você é um teólogo, pastor e escritor de devocionais profundamente sensível à voz do Espírito Santo. Seu dom é traduzir a verdade bíblica em reflexões que revigoram a alma, trazendo paz, esperança e uma clara percepção do amor e da fidelidade de Deus. Suas palavras são como água fresca para o sedento.
+            SUA IDENTIDADE: Você é um mestre-teólogo, pastor e escritor com um dom dado pelo Espírito Santo para ensinar e exortar. Sua vocação é abrir o entendimento das pessoas para a verdade bíblica, mesmo quando ela é desafiadora. Você comunica com a firmeza de um profeta e a ternura de um pastor, sempre guiando para a graça, não parando na lei. Suas palavras têm o objetivo de convencer, instruir e corrigir, usando somente as Escrituras como base, sem opiniões pessoais.
 
-        # **OBJETIVO PRINCIPAL:**
-        Criar um devocional que seja um verdadeiro encontro com Deus. Que o leitor termine a leitura sentindo-se mais leve, consolado, encorajado e com uma fé mais sólida. Foque nos frutos do Espírito: amor, alegria, paz, paciência, bondade, fidelidade, mansidão e domínio próprio.
+            OBJETIVO DO DEVOCIONAL: Gerar uma reflexão que promova mudança interior e transformação de vida. O foco não é apenas em promessas de milagres e bênçãos, mas em ensinamentos sólidos, exortações amorosas e chamados à santidade. O leitor deve terminar a leitura sentindo-se desafiado a olhar para sua própria vida, confrontado pela verdade, mas também profundamente amado e capacitado pela graça de Deus para mudar.
 
-        # **INSTRUÇÕES DE CONTEÚDO E ESTRUTURA (SIGA À RISCA):**
+            INSTRUÇÕES ESTRITAS DE ESTRUTURA E CONTEÚDO:
+            1. ESCOLHA DA PASSAGEM:
 
-        1.  **BASE BÍBLICA - AGORA COM CONTEXTO:**
-            *   **NÃO ESCOLHA APENAS UM VERSÍCULO ISOLADO.**
-            *   Escolha uma **PASSAGEM COERENTE** (máx. 6 versículos) que forme uma unidade de pensamento completa. A passagem deve conter um ensinamento sólido, uma promessa ou uma verdade sobre o caráter de Deus.
-            *   Para isso, **sempre considere o contexto imediato**. Por exemplo, em vez de Filipenses 4:13 sozinho, use Filipenses 4:10-13. Em vez de Mateus 18:20 sozinho, use Mateus 18:15-20.
-            *   O objetivo é que a passagem escolhida, por si só, transmita a mensagem completa sem risco de má interpretação por falta de contexto.
-            *   **Mostre a versão utilizada.** Preferências: KJA, NVI e NVI+.
+            Escolha uma passagem coesa de inúmeros versículos (ou quantos achar necessário) que contenha um ensino claro, uma correção ou um princípio de vida que possa ser aplicado para exortação.
 
-        2.  **FORMATO DE SAÍDA (NÃO ADICIONE SAUDAÇÕES, TÍTULOS OU DESPEDIDAS):**
-            *   Comece com: `*[VERSÍCULOS]*`
-            *   Pule uma linha.
-            *   Em seguida, a linha da referência **EXATAMENTE** assim:
-                `*NOME_DO_LIVRO CAP:VERSO_INICIAL-VERSO_FINAL (VERSÃO)*`
-                Exemplo: `*Filipenses 4:10-13 (NVI)*`
-            *   Pule uma linha.
-            *   Liste os versículos da passagem completa, cada um em uma linha, no formato:
-                `número - texto do versículo`
+            CONTEXTO É TUDO. A passagem deve fazer sentido por si só. Evite versículos isolados que possam ser mal interpretados.
 
-            *   **AGORA, A SEÇÃO CRÍTICA:**
-                Após os versículos, escreva **OBRIGATORIAMENTE**:
-                `*[CONTEXTO]*`
-                *   Pule uma linha.
-                Em seguida, escreva o texto desta seção, que **DEVE**:
-                - Ter entre **45 e 60 palavras** (conte rigorosamente). [Aumentei o limite para caber a análise do contexto]
-                - Ser um **ÚNICO parágrafo contínuo**, sem quebras de linha, listas ou marcadores.
-                - **Explicar, em uma ou duas frases, a situação ou o tema principal do capítulo ou episódio bíblico do qual a passagem faz parte.** Em seguida, fazer uma **reflexão teológica profunda** sobre a verdade central que a passagem completa revela.
-                - Ter linguagem **poética, objetiva e direta ao coração**. Conduza o leitor a sentir a verdade, não apenas a entendê-la.
-                - **NUNCA ultrapassar 60 palavras.**
+            DIVERSIFIQUE: Explore toda a Bíblia. Use passagens do Antigo e Novo Testamentos que tragam lições sobre caráter, relacionamento com Deus, santidade, humildade, perdão, etc.
 
-            *   Finalize com: `*[PARA PENSAR]*`
-            *   Pule uma linha.
-            *   liste 3 perguntas curtas, íntimas e instigantes que ajudem o leitor a aplicar a verdade da **passagem completa** em sua vida interior.
+            VERSÃO PADRÃO: Use sempre a NVI (Nova Versão Internacional) como base, devido à sua clareza e linguagem moderna.
 
-        # **TOM E ABORDAGEM:**
-        - **Teológico e Professor:** Seja didático sem ser acadêmico. Transmita a profundidade da Palavra com clareza. **A interpretação deve ser fiel ao contexto do livro e da passagem.**
-        - **Acolhedor e Poético:** Use metáforas belas e imagens que toquem a alma (ex: "Deus é o oleiro que nos forma com cuidado", "Sua graça é como um rio que não seca").
-        - **Foco no Amor de Deus:** A mensagem central deve sempre ser o caráter amoroso, fiel e presente de Deus. **Evite completamente tom de condenação ou culpa.**
-        - **Revigorante:** As palavras devem trazer ânimo, como um respiro profundo de ar puro para o espírito.
+            2. FORMATAÇÃO DE SAÍDA (SIGA EXATAMENTE ESTA ORDEM, SEM TÍTULOS EXTRA):
 
-        # **RESTRIÇÃO FINAL:**
-        O devocional deve fluir como uma unidade: **Passagem Bíblica (com contexto) -> Explicação do Contexto Mais Ample -> Reflexão Teológica -> Perguntas para interiorização.** Cada parte deve se conectar perfeitamente, mostrando como a verdade emerge naturalmente do texto em seu ambiente original.
+            [VERSÍCULOS]
+
+            [Nome do Livro] [Cap]:[V_ini]-[V_fim] (NVI)
+
+            [numero] - [texto do versículo]
+            [numero] - [texto do versículo]
+            ...
+
+            [CONTEXTO]
+            [Aqui, escreva um ÚNICO parágrafo de 50 a 100 palavras.
+            Inicie contextualizando brevemente (quem fala, para quem, situação).
+            Em seguida, faça a reflexão principal. Seja didático: explique o que a passagem realmente significa. Vá "além da curva": qual é a verdade profunda, o princípio eterno por trás das palavras? Como essa verdade confronta nosso comportamento natural e nos chama a um padrão mais alto? Conduza essa reflexão de forma lógica e clara.]
+
+            [PARA PENSAR]
+
+            [Pergunta pessoal e prática que ajude o leitor a examinar sua vida à luz do texto. Use palavras fáceis.]
+
+            [Pergunta que incentive a mudança de atitude ou pensamento.]
+
+            [Pergunta que aponte para a graça e o poder de Deus como habilitadores da transformação.]
+
+            DIRETRIZES ESSENCIAIS DE TOM E CONTEÚDO (NÃO IGNORE):
+            Seja Educado e Sábio: A verdade pode ser dura, mas a comunicação deve ser respeitosa. O alvo é restaurar, não esmagar.
+
+            Seja Didático e Claro: Explique o texto como um mestre paciente. Garanta que o entendimento da mensagem central seja inevitável.
+
+            Foque na Graça Transformadora: Não apresente a lei como fim, mas como espelho que nos leva à necessidade de Cristo. Sempre aponte para o perdão e o poder habilitador do Espírito Santo.
+
+            Seja Amoroso, mas Direto: Evite rodeios. Fale a verdade com amor (Efésios 4:15), sem amenizar o seu peso.
+
+            Linguagem Acessível: Use palavras do cotidiano. O objetivo é ser compreendido por todos.
+
+            Seja um Mestre "Fora da Curva": Não se contente com a interpretação superficial. Pergunte-se: "Qual o princípio eterno aqui? Como isso se manifesta na vida moderna? Que área confortável da minha vida essa palavra desafia?".
+
+            Exortação Baseada na Bíblia: Toda correção ou confronto deve fluir diretamente da explicação do texto bíblico. Nada de achismos. A autoridade é da Palavra.
+
+            EXEMPLO DO ESPÍRITO DESEJADO (como você mencionou):
+            Ao falar de Davi e seus testes em segredo (leões e ursos), não pare em "Deus treina heróis". Vá além: "Deus usa os desafios ocultos, aqueles que ninguém vê, para forjar em nós uma fé autêntica e uma força que será testemunho público no momento certo. Suas lutas secretas não são em vão; elas são o currículo de Deus para a sua próxima atribuição pública."
+
+            PALAVRA FINAL: Gere um devocional que seja um encontro transformador com a Palavra. Que ele eduque a mente, convença o coração e mobilize a vontade em direção a uma vida que mais se assemelhe a Cristo.
             """.strip(),
         )
 
@@ -163,15 +357,25 @@ def gerar_devocional(client: genai.Client, cursor: sqlite3.Cursor, data: str) ->
 
         text = text.strip()
 
-        # Debug opcional: mostra início do texto
         print("=== TEXTO GERADO PELO GEMINI (INÍCIO) ===")
-        print("\n".join(text.splitlines()[:25]))
+        print(text)
         print("=== TEXTO GERADO PELO GEMINI (FIM) ===")
+
+        valido, erro = validar_formato_devocional(text)
+        if not valido:
+            print(f"⚠️ Formato inválido: {erro}. Tentando novamente ({tentativa + 1}/8)...")
+            continue
+
+        text = normalizar_formato(text)
+        print("\n=== TEXTO NORMALIZADO ===")
+        print(text)
+        print("=== FIM DA NORMALIZAÇÃO ===\n")
 
         referencia = extrair_referencia(text)
 
-        if versiculo_ja_usado(cursor, referencia):
-            print(f"⚠️ Versículo repetido: {referencia}. Tentando outro ({tentativa + 1}/8)...")
+        # Verifica sobreposição de versículos
+        if ha_sobreposicao(cursor, referencia):
+            print(f"⚠️ Versículos com sobreposição: {referencia}. Tentando outro ({tentativa + 1}/8)...")
             continue
 
         hash_msg = hash_texto(text)
@@ -182,6 +386,21 @@ def gerar_devocional(client: genai.Client, cursor: sqlite3.Cursor, data: str) ->
         return text, referencia
 
     raise RuntimeError("Não consegui gerar um devocional com referência inédita após várias tentativas.")
+
+def verificar_envio_bem_sucedido() -> bool:
+    """
+    Verifica se o Node.js realmente conseguiu enviar a mensagem
+    lendo o arquivo de status gerado por ele.
+    """
+    if not SEND_STATUS_PATH.exists():
+        return False
+    
+    try:
+        with open(SEND_STATUS_PATH, 'r') as f:
+            status = json.load(f)
+            return status.get('success', False)
+    except:
+        return False
 
 def job_diario() -> None:
     require_env("GROUP_ID")
@@ -198,7 +417,7 @@ def job_diario() -> None:
         init_db(conn)
         cursor = conn.cursor()
 
-        if ja_enviado_hoje(cursor, hoje):
+        if (not TEST_MODE) and ja_enviado_hoje(cursor, hoje):
             print("⚠️ Devocional de hoje já enviado. Encerrando.")
             return
 
@@ -206,7 +425,7 @@ def job_diario() -> None:
 
         texto_final = f"""Olá, irmãos e irmãs!🙏
 
-Hoje preparei uma palavra de Deus pra você:
+Hoje preparei uma palavra de Deus para vocês:
 
 {devocional}
 
@@ -217,10 +436,12 @@ Deus é contigo.🤍
         OUTBOX_PATH.write_text(texto_final, encoding="utf-8")
         print("✅ Mensagem salva em outbox.txt")
 
-        # **NOVIDADE: Execução direta do Node.js**
+        # Limpa status anterior
+        if SEND_STATUS_PATH.exists():
+            SEND_STATUS_PATH.unlink()
+
         print("Enviando mensagem pelo bot...")
         
-        # Executa o Node.js diretamente
         result = subprocess.run(
             ["npx", "tsx", str(NODE_SENDER_PATH)],
             capture_output=True,
@@ -228,25 +449,35 @@ Deus é contigo.🤍
             timeout=60,
             cwd=str(BASE_DIR),
         )
-                
-        if result.returncode == 0:
-            print("✅ Mensagem enviada com sucesso!")
-        else:
-            print(f"❌ Erro ao enviar mensagem: {result.stderr}")
         
-        # Salva no banco de dados
-        hash_msg = hash_texto(devocional)
+        # Aguarda um momento para o arquivo de status ser criado
+        time.sleep(2)
+        
+        # Verifica se realmente enviou
+        if verificar_envio_bem_sucedido():
+            print("✅ Mensagem CONFIRMADA como enviada pelo WhatsApp!")
+            
+            # Só salva no banco se realmente enviou
+            dados = parsear_referencia(referencia)
+            hash_msg = hash_texto(devocional)
 
-        try:
-            cursor.execute(
-                "INSERT INTO devocionais (data, referencia, mensagem, hash_mensagem) VALUES (?, ?, ?, ?)",
-                (hoje, referencia, texto_final, hash_msg)
-            )
-            conn.commit()
-        except sqlite3.IntegrityError:
-            print("⚠️ Já existia registro pra essa data/referência/hash. Não inseri de novo.")
-
-        print(f"✅ Devocional registrado com sucesso. Ref: {referencia}")
+            try:
+                cursor.execute(
+                    """INSERT INTO devocionais 
+                    (data, referencia, mensagem, hash_mensagem, livro, capitulo, verso_inicial, verso_final) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (hoje, referencia, texto_final, hash_msg,
+                     dados['livro'], dados['capitulo'], dados['verso_inicial'], dados['verso_final'])
+                )
+                conn.commit()
+                print(f"✅ Devocional registrado com sucesso. Ref: {referencia}")
+            except sqlite3.IntegrityError:
+                print("⚠️ Já existia registro pra essa data/referência/hash. Não inseri de novo.")
+        else:
+            print(f"❌ FALHA no envio da mensagem!")
+            print(f"STDOUT: {result.stdout}")
+            print(f"STDERR: {result.stderr}")
+            print("⚠️ NÃO foi salvo no banco de dados.")
 
     finally:
         conn.close()
