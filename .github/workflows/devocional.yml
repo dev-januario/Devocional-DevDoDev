@@ -2,11 +2,7 @@ name: Devocional - Dev Do Dev - Envio Diário
 
 on:
   schedule:
-<<<<<<< HEAD
-    - cron: '30 9 * * *'
-=======
     - cron: '39 9 * * *'
->>>>>>> development
   workflow_dispatch:
 
 permissions:
