@@ -62,16 +62,17 @@ jobs:
           echo "GEMINI_API_KEY=${GEMINI_API_KEY}" >> .env
           cat .env | sed 's/=.*/=***/'
 
-      - name: Baixar auth do último workflow
+      - name: Baixar auth mais recente (qualquer workflow)
         uses: dawidd6/action-download-artifact@v4
         continue-on-error: true
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          workflow: keep-alive.yml,devocional.yml
+          workflow_search: true
+          workflow_conclusion: success
           name: auth_info_baileys
           path: auth_info_baileys/
-          if_no_artifact_found: ignore
           search_artifacts: true
+          if_no_artifact_found: ignore
 
       - name: Criar pasta auth_info_baileys do secret (fallback)
         if: ${{ hashFiles('auth_info_baileys/**') == '' }}
@@ -84,16 +85,6 @@ jobs:
             echo "❌ Nenhum auth encontrado"
             exit 1
           fi
-
-      - name: Baixar auth atualizado do keep-alive
-        uses: dawidd6/action-download-artifact@v4
-        continue-on-error: true
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          workflow: keep-alive.yml
-          name: auth_info_baileys
-          path: auth_info_baileys/
-          if_no_artifact_found: ignore
 
       - name: Baixar database.zip do último run
         uses: dawidd6/action-download-artifact@v4
