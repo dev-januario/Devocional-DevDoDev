@@ -99,7 +99,7 @@ jobs:
         run: |
           echo "✅ Keep-alive concluído com sucesso!"
           echo "📅 Executado em: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-          echo "🔄 Próxima execução em ~12 horas"
+          echo "🔄 Próxima execução em ~6 horas"
           echo ""
           echo "ℹ️ O auth atualizado foi salvo como artifact e será"
           echo "   usado automaticamente pelos próximos workflows."
