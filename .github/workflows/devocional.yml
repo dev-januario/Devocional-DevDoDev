@@ -2,7 +2,7 @@ name: Devocional - Dev Do Dev - Envio Diário
 
 on:
   schedule:
-    - cron: '39 9 * * *'
+    - cron: '30 9 * * *'
   workflow_dispatch:
 
 permissions:
@@ -67,9 +67,21 @@ jobs:
           if [ -n "${{ secrets.AUTH_INFO_BAILEYS }}" ]; then
             mkdir -p auth_info_baileys
             echo "${{ secrets.AUTH_INFO_BAILEYS }}" | base64 --decode | tar -xz -C auth_info_baileys
+            echo "✅ Auth info restaurado do secret"
           else
-            echo "Secret AUTH_INFO_BAILEYS não encontrado."
+            echo "❌ Secret AUTH_INFO_BAILEYS não encontrado."
+            exit 1
           fi
+
+      - name: Baixar auth atualizado do keep-alive
+        uses: dawidd6/action-download-artifact@v4
+        continue-on-error: true
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          workflow: keep-alive.yml
+          name: auth_info_baileys
+          path: auth_info_baileys/
+          if_no_artifact_found: ignore
 
       - name: Baixar database.zip do último run
         uses: dawidd6/action-download-artifact@v4

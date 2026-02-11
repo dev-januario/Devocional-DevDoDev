@@ -1,0 +1,104 @@
+name: WhatsApp Keep-Alive
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  keep-alive:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Forçar registry do npmjs
+        run: |
+          npm config set registry https://registry.npmjs.org/
+          npm config get registry
+
+      - name: Instalar dependências Node.js
+        run: npm ci
+
+      - name: Definir envs por branch
+        shell: bash
+        run: |
+          echo "BRANCH=${GITHUB_REF_NAME}" >> $GITHUB_ENV
+
+          if [[ "${GITHUB_REF_NAME}" == "main" ]]; then
+            echo "GROUP_ID=${{ secrets.GROUP_ID_MAIN }}" >> $GITHUB_ENV
+          elif [[ "${GITHUB_REF_NAME}" == "development" ]]; then
+            echo "GROUP_ID=${{ secrets.GROUP_ID_DEV }}" >> $GITHUB_ENV
+          else
+            echo "GROUP_ID=${{ secrets.GROUP_ID_DEV }}" >> $GITHUB_ENV
+          fi
+
+      - name: Gerar .env
+        shell: bash
+        run: |
+          echo "GROUP_ID=${GROUP_ID}" > .env
+          cat .env | sed 's/=.*/=***/'
+
+      - name: Criar pasta auth_info_baileys
+        run: |
+          if [ -n "${{ secrets.AUTH_INFO_BAILEYS }}" ]; then
+            mkdir -p auth_info_baileys
+            echo "${{ secrets.AUTH_INFO_BAILEYS }}" | base64 --decode | tar -xz -C auth_info_baileys
+            echo "✅ Auth info restaurado do secret"
+            ls -la auth_info_baileys/
+          else
+            echo "❌ Secret AUTH_INFO_BAILEYS não encontrado."
+            exit 1
+          fi
+
+      - name: Executar keep-alive
+        run: |
+          echo "🔄 Renovando sessão WhatsApp..."
+          npx tsx keep-alive.ts
+
+      - name: Upload da pasta auth_info_baileys atualizada
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: auth_info_baileys
+          path: auth_info_baileys/
+
+      - name: Atualizar secret AUTH_INFO_BAILEYS automaticamente
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          echo "🔄 Atualizando secret AUTH_INFO_BAILEYS..."
+          
+          cd auth_info_baileys
+          AUTH_BASE64=$(tar -czf - . | base64 -w 0)
+          
+          # Instala GitHub CLI se necessário
+          if ! command -v gh &> /dev/null; then
+            echo "Instalando GitHub CLI..."
+            type -p curl >/dev/null || (sudo apt update && sudo apt install curl -y)
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+            sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+            sudo apt update
+            sudo apt install gh -y
+          fi
+          
+          # Atualiza o secret
+          echo "$AUTH_BASE64" | gh secret set AUTH_INFO_BAILEYS --repo "$REPO"
+          
+          echo "✅ Secret AUTH_INFO_BAILEYS atualizado com sucesso!"
+          echo "📅 Atualizado em: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
