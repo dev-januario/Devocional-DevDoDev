@@ -62,14 +62,26 @@ jobs:
           echo "GEMINI_API_KEY=${GEMINI_API_KEY}" >> .env
           cat .env | sed 's/=.*/=***/'
 
-      - name: Criar pasta auth_info_baileys
+      - name: Baixar auth do último workflow
+        uses: dawidd6/action-download-artifact@v4
+        continue-on-error: true
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          workflow: keep-alive.yml,devocional.yml
+          name: auth_info_baileys
+          path: auth_info_baileys/
+          if_no_artifact_found: ignore
+          search_artifacts: true
+
+      - name: Criar pasta auth_info_baileys do secret (fallback)
+        if: ${{ hashFiles('auth_info_baileys/**') == '' }}
         run: |
           if [ -n "${{ secrets.AUTH_INFO_BAILEYS }}" ]; then
             mkdir -p auth_info_baileys
             echo "${{ secrets.AUTH_INFO_BAILEYS }}" | base64 --decode | tar -xz -C auth_info_baileys
-            echo "✅ Auth info restaurado do secret"
+            echo "✅ Auth info restaurado do secret (fallback)"
           else
-            echo "❌ Secret AUTH_INFO_BAILEYS não encontrado."
+            echo "❌ Nenhum auth encontrado"
             exit 1
           fi
 

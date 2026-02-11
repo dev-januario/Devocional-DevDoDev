@@ -38,7 +38,7 @@ jobs:
           echo "BRANCH=${GITHUB_REF_NAME}" >> $GITHUB_ENV
 
           if [[ "${GITHUB_REF_NAME}" == "main" ]]; then
-            echo "GROUP_ID=${{ secrets.GROUP_ID_MAIN }}" >> $GITHUB_ENV
+            echo "GROUP_ID=${{ secrets.GROUP_ID_DEV }}" >> $GITHUB_ENV
           elif [[ "${GITHUB_REF_NAME}" == "development" ]]; then
             echo "GROUP_ID=${{ secrets.GROUP_ID_DEV }}" >> $GITHUB_ENV
           else
@@ -51,17 +51,35 @@ jobs:
           echo "GROUP_ID=${GROUP_ID}" > .env
           cat .env | sed 's/=.*/=***/'
 
-      - name: Criar pasta auth_info_baileys
+      - name: Baixar auth do último workflow
+        uses: dawidd6/action-download-artifact@v4
+        continue-on-error: true
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          workflow: keep-alive.yml,devocional.yml
+          name: auth_info_baileys
+          path: auth_info_baileys/
+          if_no_artifact_found: ignore
+          search_artifacts: true
+
+      - name: Criar pasta auth_info_baileys do secret (fallback)
+        if: ${{ hashFiles('auth_info_baileys/**') == '' }}
         run: |
           if [ -n "${{ secrets.AUTH_INFO_BAILEYS }}" ]; then
             mkdir -p auth_info_baileys
             echo "${{ secrets.AUTH_INFO_BAILEYS }}" | base64 --decode | tar -xz -C auth_info_baileys
-            echo "✅ Auth info restaurado do secret"
-            ls -la auth_info_baileys/
+            echo "✅ Auth info restaurado do secret (fallback)"
           else
-            echo "❌ Secret AUTH_INFO_BAILEYS não encontrado."
+            echo "❌ Nenhum auth encontrado (nem artifact nem secret)"
             exit 1
           fi
+
+      - name: Verificar conteúdo do auth
+        run: |
+          echo "📂 Conteúdo de auth_info_baileys:"
+          ls -lah auth_info_baileys/
+          echo "📊 Tamanho total:"
+          du -sh auth_info_baileys/
 
       - name: Executar keep-alive
         run: |
@@ -74,31 +92,14 @@ jobs:
         with:
           name: auth_info_baileys
           path: auth_info_baileys/
+          retention-days: 90
 
-      - name: Atualizar secret AUTH_INFO_BAILEYS automaticamente
+      - name: Relatório de sucesso
         if: success()
-        env:
-          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
-          REPO: ${{ github.repository }}
         run: |
-          echo "🔄 Atualizando secret AUTH_INFO_BAILEYS..."
-          
-          cd auth_info_baileys
-          AUTH_BASE64=$(tar -czf - . | base64 -w 0)
-          
-          # Instala GitHub CLI se necessário
-          if ! command -v gh &> /dev/null; then
-            echo "Instalando GitHub CLI..."
-            type -p curl >/dev/null || (sudo apt update && sudo apt install curl -y)
-            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
-            sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
-            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-            sudo apt update
-            sudo apt install gh -y
-          fi
-          
-          # Atualiza o secret
-          echo "$AUTH_BASE64" | gh secret set AUTH_INFO_BAILEYS --repo "$REPO"
-          
-          echo "✅ Secret AUTH_INFO_BAILEYS atualizado com sucesso!"
-          echo "📅 Atualizado em: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "✅ Keep-alive concluído com sucesso!"
+          echo "📅 Executado em: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "🔄 Próxima execução em ~12 horas"
+          echo ""
+          echo "ℹ️ O auth atualizado foi salvo como artifact e será"
+          echo "   usado automaticamente pelos próximos workflows."
