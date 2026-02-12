@@ -1,4 +1,4 @@
-import makeWASocket, { DisconnectReason, useMultiFileAuthState } from '@whiskeysockets/baileys'
+import makeWASocket, { DisconnectReason, useMultiFileAuthState, WAMessageStatus } from '@whiskeysockets/baileys'
 import { Boom } from '@hapi/boom'
 import qrcode from 'qrcode-terminal'
 import { readFileSync, writeFileSync } from 'fs'
@@ -56,7 +56,9 @@ async function connectToWhatsApp() {
                 const mensagem = readFileSync('outbox.txt', 'utf-8');
                 const groupId = process.env.GROUP_ID || '120363424073386097@g.us';
 
+                await sock.groupMetadata(groupId);
                 const result = await sock.sendMessage(groupId, { text: mensagem });
+                await waitForDelivered(sock, result?.key, 60000);
 
                 console.log('✅ Mensagem enviada com sucesso!');
                 console.log('📋 Detalhes:', result);
@@ -69,10 +71,11 @@ async function connectToWhatsApp() {
 
                 resolved = true;
 
-                setTimeout(() => {
-                    console.log('Encerrando conexão...');
-                    process.exit(0);
-                }, 3000);
+                const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+                await delay(60000);
+
+                console.log('Encerrando conexão...');
+                process.exit(0);
 
             } catch (err) {
                 console.error('❌ Erro ao enviar mensagem:', err);
@@ -90,6 +93,30 @@ async function connectToWhatsApp() {
         }
     });
 
+    function waitForDelivered(sock: any, msgKey: any, timeoutMs = 60000) {
+        return new Promise<void>((resolve, reject) => {
+            const t = setTimeout(() => {
+                sock.ev.off('messages.update', onUpdate)
+                reject(new Error('Timeout esperando delivery'))
+            }, timeoutMs)
+
+            const onUpdate = (updates: any[]) => {
+                for (const u of updates) {
+                    if (u.key?.id === msgKey.id) {
+                        const st = u.update?.status
+                        if (typeof st === 'number' && st >= WAMessageStatus.DELIVERY_ACK) {
+                            clearTimeout(t)
+                            sock.ev.off('messages.update', onUpdate)
+                            resolve()
+                        }
+                    }
+                }
+            }
+
+            sock.ev.on('messages.update', onUpdate)
+        })
+    }
+
     sock.ev.on('creds.update', saveCreds);
 
     setTimeout(() => {
@@ -99,13 +126,13 @@ async function connectToWhatsApp() {
             const status: SendStatus = {
                 success: false,
                 timestamp: new Date().toISOString(),
-                error: 'Timeout de conexão (30s)'
+                error: 'Timeout de conexão (60s)'
             };
             writeFileSync('send_status.json', JSON.stringify(status, null, 2));
 
             process.exit(1);
         }
-    }, 30000);
+    }, 60000);
 }
 
 connectToWhatsApp();
