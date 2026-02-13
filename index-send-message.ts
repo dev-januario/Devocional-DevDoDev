@@ -56,7 +56,7 @@ async function connectToWhatsApp() {
 
                 await sock.groupMetadata(groupId);
                 const result = await sock.sendMessage(groupId, { text: mensagem });
-                await waitForDelivered(sock, result?.key, 30000);
+                await waitForDelivered(sock, result?.key, 20000);
 
                 console.log('✅ Mensagem enviada com sucesso!');
                 console.log('📋 Detalhes:', result);
@@ -126,7 +126,7 @@ async function connectToWhatsApp() {
 
             process.exit(1);
         }
-    }, 60000);
+    }, 30000);
 }
 
 connectToWhatsApp();
