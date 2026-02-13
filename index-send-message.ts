@@ -45,8 +45,6 @@ async function connectToWhatsApp() {
             if (shouldReconnect && !resolved) {
                 console.log('Tentando reconectar...');
                 setTimeout(() => connectToWhatsApp(), 5000);
-            } else {
-                process.exit(1);
             }
         }
         else if (connection === 'open') {
@@ -70,13 +68,9 @@ async function connectToWhatsApp() {
                 writeFileSync('send_status.json', JSON.stringify(status, null, 2));
 
                 resolved = true;
-
-                const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-                await delay(60000);
-
                 console.log('Encerrando conexão...');
+                await new Promise(r => setTimeout(r, 2000));
                 process.exit(0);
-
             } catch (err) {
                 console.error('❌ Erro ao enviar mensagem:', err);
 

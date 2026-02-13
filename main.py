@@ -446,7 +446,7 @@ Deus é contigo.🤍
             ["npx", "tsx", str(NODE_SENDER_PATH)],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=130,
             cwd=str(BASE_DIR),
         )
         
