@@ -56,16 +56,19 @@ async function connectToWhatsApp() {
 
                 await sock.groupMetadata(groupId);
                 const result = await sock.sendMessage(groupId, { text: mensagem });
-                await waitForDelivered(sock, result?.key, 20000);
 
-                console.log('✅ Mensagem enviada com sucesso!');
-                console.log('📋 Detalhes:', result);
-
-                const status: SendStatus = {
+                writeFileSync('send_status.json', JSON.stringify({
                     success: true,
                     timestamp: new Date().toISOString()
-                };
-                writeFileSync('send_status.json', JSON.stringify(status, null, 2));
+                }, null, 2));
+
+                try {
+                    await waitForDeliveredOrReceipt(sock, result?.key, 30000);
+                    console.log('📬 Delivery/receipt confirmado.');
+                    console.log('✅ Mensagem enviada com sucesso!');
+                } catch (e) {
+                    console.warn('⚠️ Não veio receipt a tempo (ok em grupo). Seguindo...');
+                }
 
                 resolved = true;
                 console.log('Encerrando conexão...');
@@ -87,27 +90,43 @@ async function connectToWhatsApp() {
         }
     });
 
-    function waitForDelivered(sock: any, msgKey: any, timeoutMs = 60000) {
+    function waitForDeliveredOrReceipt(sock: any, msgKey: any, timeoutMs = 60000) {
         return new Promise<void>((resolve, reject) => {
+            const done = () => {
+                sock.ev.off('messages.update', onMsgUpdate)
+                sock.ev.off('message-receipt.update', onReceiptUpdate)
+                clearTimeout(t)
+            }
+
             const t = setTimeout(() => {
-                sock.ev.off('messages.update', onUpdate)
-                reject(new Error('Timeout esperando delivery'))
+                done()
+                reject(new Error('Timeout esperando delivery/receipt'))
             }, timeoutMs)
 
-            const onUpdate = (updates: any[]) => {
+            const onMsgUpdate = (updates: any[]) => {
                 for (const u of updates) {
-                    if (u.key?.id === msgKey.id) {
+                    if (u.key?.id === msgKey?.id && u.key?.remoteJid === msgKey?.remoteJid) {
                         const st = u.update?.status
                         if (typeof st === 'number' && st >= WAMessageStatus.DELIVERY_ACK) {
-                            clearTimeout(t)
-                            sock.ev.off('messages.update', onUpdate)
+                            done()
                             resolve()
                         }
                     }
                 }
             }
 
-            sock.ev.on('messages.update', onUpdate)
+            // Em grupos, o “recebido por quem” costuma vir aqui
+            const onReceiptUpdate = (receipts: any[]) => {
+                for (const r of receipts) {
+                    if (r.key?.id === msgKey?.id) {
+                        done()
+                        resolve()
+                    }
+                }
+            }
+
+            sock.ev.on('messages.update', onMsgUpdate)
+            sock.ev.on('message-receipt.update', onReceiptUpdate)
         })
     }
 
@@ -120,7 +139,7 @@ async function connectToWhatsApp() {
             const status: SendStatus = {
                 success: false,
                 timestamp: new Date().toISOString(),
-                error: 'Timeout de conexão (60s)'
+                error: 'Timeout de conexão (30s)'
             };
             writeFileSync('send_status.json', JSON.stringify(status, null, 2));
 
