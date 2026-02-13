@@ -56,7 +56,7 @@ async function connectToWhatsApp() {
 
                 await sock.groupMetadata(groupId);
                 const result = await sock.sendMessage(groupId, { text: mensagem });
-                await waitForDelivered(sock, result?.key, 60000);
+                await waitForDelivered(sock, result?.key, 30000);
 
                 console.log('✅ Mensagem enviada com sucesso!');
                 console.log('📋 Detalhes:', result);
