@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   actions: read
 
 jobs:
@@ -62,29 +62,11 @@ jobs:
           echo "GEMINI_API_KEY=${GEMINI_API_KEY}" >> .env
           cat .env | sed 's/=.*/=***/'
 
-      - name: Baixar auth mais recente (qualquer workflow)
-        uses: dawidd6/action-download-artifact@v4
-        continue-on-error: true
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          workflow_search: true
-          workflow_conclusion: success
-          name: auth_info_baileys
-          path: auth_info_baileys/
-          search_artifacts: true
-          if_no_artifact_found: ignore
-
-      - name: Criar pasta auth_info_baileys do secret (fallback)
-        if: ${{ hashFiles('auth_info_baileys/**') == '' }}
+      - name: Restaurar auth da branch auth
         run: |
-          if [ -n "${{ secrets.AUTH_INFO_BAILEYS }}" ]; then
-            mkdir -p auth_info_baileys
-            echo "${{ secrets.AUTH_INFO_BAILEYS }}" | base64 --decode | tar -xz -C auth_info_baileys
-            echo "✅ Auth info restaurado do secret (fallback)"
-          else
-            echo "❌ Nenhum auth encontrado"
-            exit 1
-          fi
+          git fetch origin auth
+          git checkout origin/auth -- auth_info_baileys/
+          echo "✅ Auth restaurado da branch auth"
 
       - name: Baixar database.zip do último run
         uses: dawidd6/action-download-artifact@v4
@@ -126,7 +108,6 @@ jobs:
             echo "Status do envio:"
             cat send_status.json
             
-            # Verificar se foi sucesso
             if grep -q '"success": *true' send_status.json; then
               echo "✅ Mensagem enviada com sucesso!"
               exit 0
@@ -139,17 +120,39 @@ jobs:
             exit 1
           fi
 
-      # ↓ STEP ADICIONADO: empacota o banco após a execução
+      - name: Atualizar auth na branch auth
+        if: always()
+        run: |
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+
+          # Salva os creds atualizados em pasta temporária
+          cp -r auth_info_baileys /tmp/auth_info_baileys
+
+          # Vai para a branch auth
+          git fetch origin auth
+          git checkout auth
+
+          # Copia os creds atualizados
+          rm -rf auth_info_baileys
+          cp -r /tmp/auth_info_baileys auth_info_baileys
+
+          git add auth_info_baileys/
+          git diff --cached --quiet && echo "Nada a commitar" || git commit -m "chore: update auth [skip ci]"
+          git push origin auth
+
+          # Volta para a branch original
+          git checkout ${{ github.ref_name }}
+
       - name: Empacotar database.zip
         if: success()
         run: |
-          # Ajuste o nome do arquivo/pasta do seu banco aqui
           if [ -f database.db ]; then
             zip database.zip database.db
             echo "database.zip criado."
           else
             echo "ATENÇÃO: database.db não encontrado. Nada foi empacotado."
-            ls -la  # debug
+            ls -la
           fi
 
       - name: Upload do outbox.txt
@@ -167,10 +170,3 @@ jobs:
           name: database
           path: database.zip
           if-no-files-found: warn
-
-      - name: Upload da pasta auth_info_baileys
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: auth_info_baileys
-          path: auth_info_baileys/
