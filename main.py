@@ -1,16 +1,17 @@
 import os
 import sqlite3
-import subprocess
 import re
 import json
 from datetime import datetime
 from pathlib import Path
 
 from google import genai
+from google.genai import errors as genai_errors
 from dotenv import load_dotenv
 import ssl
 import time
 import hashlib
+import random
 
 ssl._create_default_https_context = ssl._create_unverified_context
 
@@ -229,75 +230,100 @@ def normalizar_formato(texto: str) -> str:
     return "\n".join(linhas_normalizadas)
 
 def gerar_devocional(client: genai.Client, cursor: sqlite3.Cursor, data: str) -> tuple[str, str]:
+    modelos = [
+        "gemini-3-pro-preview",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+        "gemini-2.0-pro",
+        "gemini-2.0-flash",
+    ]
+
     for tentativa in range(8):
-        response = client.models.generate_content(
-            model="gemini-3-pro-preview",
-            contents=f"""
-            Hoje é {data}. Com base na data e no direcionamento abaixo, escreva um devocional cristão inédito, completo e transformador.
+        model = modelos[min(tentativa, len(modelos) - 1)]
 
-            SUA IDENTIDADE: Você é um mestre-teólogo, pastor e escritor com um dom dado pelo Espírito Santo para ensinar e exortar. Sua vocação é abrir o entendimento das pessoas para a verdade bíblica, mesmo quando ela é desafiadora. Você comunica com a firmeza de um profeta e a ternura de um pastor, sempre guiando para a graça, não parando na lei. Suas palavras têm o objetivo de convencer, instruir e corrigir, usando somente as Escrituras como base, sem opiniões pessoais.
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=f"""
+                Hoje é {data}. Com base na data e no direcionamento abaixo, escreva um devocional cristão inédito, completo e transformador.
 
-            OBJETIVO DO DEVOCIONAL: Gerar uma reflexão que promova mudança interior e transformação de vida. O foco não é apenas em promessas de milagres e bênçãos, mas em ensinamentos sólidos, exortações amorosas e chamados à santidade. O leitor deve terminar a leitura sentindo-se desafiado a olhar para sua própria vida, confrontado pela verdade, mas também profundamente amado e capacitado pela graça de Deus para mudar.
+                SUA IDENTIDADE: Você é um mestre-teólogo, pastor e escritor com um dom dado pelo Espírito Santo para ensinar e exortar. Sua vocação é abrir o entendimento das pessoas para a verdade bíblica, mesmo quando ela é desafiadora. Você comunica com a firmeza de um profeta e a ternura de um pastor, sempre guiando para a graça, não parando na lei. Suas palavras têm o objetivo de convencer, instruir e corrigir, usando somente as Escrituras como base, sem opiniões pessoais.
 
-            INSTRUÇÕES ESTRITAS DE ESTRUTURA E CONTEÚDO:
-            1. ESCOLHA DA PASSAGEM:
+                OBJETIVO DO DEVOCIONAL: Gerar uma reflexão que promova mudança interior e transformação de vida. O foco não é apenas em promessas de milagres e bênçãos, mas em ensinamentos sólidos, exortações amorosas e chamados à santidade. O leitor deve terminar a leitura sentindo-se desafiado a olhar para sua própria vida, confrontado pela verdade, mas também profundamente amado e capacitado pela graça de Deus para mudar.
 
-            Escolha uma passagem coesa de inúmeros versículos (ou quantos achar necessário) que contenha um ensino claro, uma correção ou um princípio de vida que possa ser aplicado para exortação.
+                INSTRUÇÕES ESTRITAS DE ESTRUTURA E CONTEÚDO:
+                1. ESCOLHA DA PASSAGEM:
 
-            CONTEXTO É TUDO. A passagem deve fazer sentido por si só. Evite versículos isolados que possam ser mal interpretados.
+                Escolha uma passagem coesa de inúmeros versículos (ou quantos achar necessário) que contenha um ensino claro, uma correção ou um princípio de vida que possa ser aplicado para exortação.
 
-            DIVERSIFIQUE: Explore toda a Bíblia. Use passagens do Antigo e Novo Testamentos que tragam lições sobre caráter, relacionamento com Deus, santidade, humildade, perdão, etc.
+                CONTEXTO É TUDO. A passagem deve fazer sentido por si só. Evite versículos isolados que possam ser mal interpretados.
 
-            VERSÃO PADRÃO: Use sempre a NVI (Nova Versão Internacional) como base, devido à sua clareza e linguagem moderna.
+                DIVERSIFIQUE: Explore toda a Bíblia. Use passagens do Antigo e Novo Testamentos que tragam lições sobre caráter, relacionamento com Deus, santidade, humildade, perdão, etc.
 
-            2. FORMATAÇÃO DE SAÍDA (SIGA EXATAMENTE ESTA ORDEM, SEM TÍTULOS EXTRA):
+                VERSÃO PADRÃO: Use sempre a NVI (Nova Versão Internacional) como base, devido à sua clareza e linguagem moderna.
 
-            [VERSÍCULOS]
+                2. FORMATAÇÃO DE SAÍDA (SIGA EXATAMENTE ESTA ORDEM, SEM TÍTULOS EXTRA):
 
-            [Nome do Livro] [Cap]:[V_ini]-[V_fim] (NVI)
+                [VERSÍCULOS]
 
-            [numero] - [texto do versículo]
-            [numero] - [texto do versículo]
-            ...
+                [Nome do Livro] [Cap]:[V_ini]-[V_fim] (NVI)
 
-            [CONTEXTO]
-            [Aqui, escreva um ÚNICO parágrafo de 50 a 100 palavras.
-            Inicie contextualizando brevemente (quem fala, para quem, situação).
-            Em seguida, faça a reflexão principal. Seja didático: explique o que a passagem realmente significa. Vá "além da curva": qual é a verdade profunda, o princípio eterno por trás das palavras? Como essa verdade confronta nosso comportamento natural e nos chama a um padrão mais alto? Conduza essa reflexão de forma lógica e clara.]
+                [numero] - [texto do versículo]
+                [numero] - [texto do versículo]
+                ...
 
-            [PARA PENSAR]
+                [CONTEXTO]
+                [Aqui, escreva um ÚNICO parágrafo de 50 a 100 palavras.
+                Inicie contextualizando brevemente (quem fala, para quem, situação).
+                Em seguida, faça a reflexão principal. Seja didático: explique o que a passagem realmente significa. Vá "além da curva": qual é a verdade profunda, o princípio eterno por trás das palavras? Como essa verdade confronta nosso comportamento natural e nos chama a um padrão mais alto? Conduza essa reflexão de forma lógica e clara.]
 
-            [Pergunta pessoal e prática que ajude o leitor a examinar sua vida à luz do texto. Use palavras fáceis.]
+                [PARA PENSAR]
 
-            [Pergunta que incentive a mudança de atitude ou pensamento.]
+                [Pergunta pessoal e prática que ajude o leitor a examinar sua vida à luz do texto. Use palavras fáceis.]
 
-            [Pergunta que aponte para a graça e o poder de Deus como habilitadores da transformação.]
+                [Pergunta que incentive a mudança de atitude ou pensamento.]
 
-            DIRETRIZES ESSENCIAIS DE TOM E CONTEÚDO (NÃO IGNORE):
-            Seja Educado e Sábio: A verdade pode ser dura, mas a comunicação deve ser respeitosa. O alvo é restaurar, não esmagar.
+                [Pergunta que aponte para a graça e o poder de Deus como habilitadores da transformação.]
 
-            Seja Didático e Claro: Explique o texto como um mestre paciente. Garanta que o entendimento da mensagem central seja inevitável.
+                DIRETRIZES ESSENCIAIS DE TOM E CONTEÚDO (NÃO IGNORE):
+                Seja Educado e Sábio: A verdade pode ser dura, mas a comunicação deve ser respeitosa. O alvo é restaurar, não esmagar.
 
-            Foque na Graça Transformadora: Não apresente a lei como fim, mas como espelho que nos leva à necessidade de Cristo. Sempre aponte para o perdão e o poder habilitador do Espírito Santo.
+                Seja Didático e Claro: Explique o texto como um mestre paciente. Garanta que o entendimento da mensagem central seja inevitável.
 
-            Seja Amoroso, mas Direto: Evite rodeios. Fale a verdade com amor (Efésios 4:15), sem amenizar o seu peso.
+                Foque na Graça Transformadora: Não apresente a lei como fim, mas como espelho que nos leva à necessidade de Cristo. Sempre aponte para o perdão e o poder habilitador do Espírito Santo.
 
-            Linguagem Acessível: Use palavras do cotidiano. O objetivo é ser compreendido por todos.
+                Seja Amoroso, mas Direto: Evite rodeios. Fale a verdade com amor (Efésios 4:15), sem amenizar o seu peso.
 
-            Seja um Mestre "Fora da Curva": Não se contente com a interpretação superficial. Pergunte-se: "Qual o princípio eterno aqui? Como isso se manifesta na vida moderna? Que área confortável da minha vida essa palavra desafia?".
+                Linguagem Acessível: Use palavras do cotidiano. O objetivo é ser compreendido por todos.
 
-            Exortação Baseada na Bíblia: Toda correção ou confronto deve fluir diretamente da explicação do texto bíblico. Nada de achismos. A autoridade é da Palavra.
+                Seja um Mestre "Fora da Curva": Não se contente com a interpretação superficial. Pergunte-se: "Qual o princípio eterno aqui? Como isso se manifesta na vida moderna? Que área confortável da minha vida essa palavra desafia?".
 
-            EXEMPLO DO ESPÍRITO DESEJADO (como você mencionou):
-            Ao falar de Davi e seus testes em segredo (leões e ursos), não pare em "Deus treina heróis". Vá além: "Deus usa os desafios ocultos, aqueles que ninguém vê, para forjar em nós uma fé autêntica e uma força que será testemunho público no momento certo. Suas lutas secretas não são em vão; elas são o currículo de Deus para a sua próxima atribuição pública."
+                Exortação Baseada na Bíblia: Toda correção ou confronto deve fluir diretamente da explicação do texto bíblico. Nada de achismos. A autoridade é da Palavra.
 
-            PALAVRA FINAL: Gere um devocional que seja um encontro transformador com a Palavra. Que ele eduque a mente, convença o coração e mobilize a vontade em direção a uma vida que mais se assemelhe a Cristo.
-            """.strip(),
-        )
+                EXEMPLO DO ESPÍRITO DESEJADO (como você mencionou):
+                Ao falar de Davi e seus testes em segredo (leões e ursos), não pare em "Deus treina heróis". Vá além: "Deus usa os desafios ocultos, aqueles que ninguém vê, para forjar em nós uma fé autêntica e uma força que será testemunho público no momento certo. Suas lutas secretas não são em vão; elas são o currículo de Deus para a sua próxima atribuição pública."
+
+                PALAVRA FINAL: Gere um devocional que seja um encontro transformador com a Palavra. Que ele eduque a mente, convença o coração e mobilize a vontade em direção a uma vida que mais se assemelhe a Cristo.
+                """.strip(),
+            )
+
+        except genai_errors.ServerError as e:
+            # 503/5xx: backoff com jitter
+            wait = min(60, 2 ** tentativa) + random.uniform(0, 1.5)
+            print(f"⚠️ Gemini/ServerError ({getattr(e, 'status_code', '5xx')}): {e}. Retry em {wait:.1f}s...")
+            time.sleep(wait)
+            continue
+        except Exception as e:
+            # qualquer outro erro: também tenta mais uma vez, mas sem loop infinito
+            wait = min(30, 2 ** tentativa) + random.uniform(0, 1.0)
+            print(f"⚠️ Erro inesperado no Gemini: {e}. Retry em {wait:.1f}s...")
+            time.sleep(wait)
+            continue
 
         text = getattr(response, "text", None)
         if not text:
-            raise RuntimeError("Gemini retornou resposta vazia.")
+            print(f"⚠️ Resposta vazia do Gemini (modelo {model}). Tentando outro...")
+            continue
 
         text = text.strip()
 
@@ -311,13 +337,8 @@ def gerar_devocional(client: genai.Client, cursor: sqlite3.Cursor, data: str) ->
             continue
 
         text = normalizar_formato(text)
-        print("\n=== TEXTO NORMALIZADO ===")
-        print(text)
-        print("=== FIM DA NORMALIZAÇÃO ===\n")
-
         referencia = extrair_referencia(text)
 
-        # Verifica sobreposição de versículos
         if ha_sobreposicao(cursor, referencia):
             print(f"⚠️ Versículos com sobreposição: {referencia}. Tentando outro ({tentativa + 1}/8)...")
             continue
