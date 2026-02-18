@@ -100,6 +100,8 @@ jobs:
           head -n 10 outbox.txt
 
       - name: Enviar mensagem via WhatsApp
+        env:
+          GROUP_ID: ${{ github.ref == 'refs/heads/main' && secrets.GROUP_ID_MAIN || secrets.GROUP_ID_DEV }}
         run: npx tsx index-send-message.ts
 
       - name: Verificar status do envio
