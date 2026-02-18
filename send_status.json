@@ -1,5 +1,6 @@
 {
-  "success": false,
-  "timestamp": "2026-02-18T16:30:35.535Z",
-  "error": "Grupo não encontrado ou inacessível: Cannot read properties of undefined (reading 'attrs')"
+  "success": true,
+  "timestamp": "2026-02-18T17:41:33.413Z",
+  "messageId": "3EB00D8FAA6080569A438F",
+  "remoteJid": "120363424073386097@g.us"
 }
