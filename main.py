@@ -64,19 +64,19 @@ def init_db(conn: sqlite3.Connection) -> None:
     if not column_exists(conn, "devocionais", "hash_mensagem"):
         cursor.execute("ALTER TABLE devocionais ADD COLUMN hash_mensagem TEXT")
         conn.commit()
-    
+
     if not column_exists(conn, "devocionais", "livro"):
         cursor.execute("ALTER TABLE devocionais ADD COLUMN livro TEXT")
         conn.commit()
-    
+
     if not column_exists(conn, "devocionais", "capitulo"):
         cursor.execute("ALTER TABLE devocionais ADD COLUMN capitulo INTEGER")
         conn.commit()
-    
+
     if not column_exists(conn, "devocionais", "verso_inicial"):
         cursor.execute("ALTER TABLE devocionais ADD COLUMN verso_inicial INTEGER")
         conn.commit()
-    
+
     if not column_exists(conn, "devocionais", "verso_final"):
         cursor.execute("ALTER TABLE devocionais ADD COLUMN verso_final INTEGER")
         conn.commit()
@@ -87,26 +87,18 @@ def init_db(conn: sqlite3.Connection) -> None:
     """)
     conn.commit()
 
-def parsear_referencia(ref: str) -> dict:
-    """
-    Extrai livro, capítulo, verso inicial e final de uma referência.
-    Ex: 'Filipenses 4:4-7 (NVI)' -> {'livro': 'Filipenses', 'cap': 4, 'v_ini': 4, 'v_fim': 7}
-    """
-    # Remove a versão entre parênteses
+def parsear_referencia(ref: str) -> dict | None:
     ref_limpa = re.sub(r'\s*\([^)]+\)\s*$', '', ref).strip()
-    
-    # Padrão: LIVRO CAP:VERSO ou LIVRO CAP:VERSO-VERSO
     padrao = r'^(.+?)\s+(\d+)\s*:\s*(\d+)(?:\s*-\s*(\d+))?'
     m = re.match(padrao, ref_limpa)
-    
     if not m:
         return None
-    
+
     livro = m.group(1).strip()
     capitulo = int(m.group(2))
     verso_inicial = int(m.group(3))
     verso_final = int(m.group(4)) if m.group(4) else verso_inicial
-    
+
     return {
         'livro': livro,
         'capitulo': capitulo,
@@ -115,40 +107,29 @@ def parsear_referencia(ref: str) -> dict:
     }
 
 def ha_sobreposicao(cursor: sqlite3.Cursor, referencia: str) -> bool:
-    """
-    Verifica se algum versículo da nova referência já foi usado anteriormente.
-    Retorna True se houver sobreposição.
-    """
     dados = parsear_referencia(referencia)
     if not dados:
         return False
-    
-    # Busca todos os registros do mesmo livro e capítulo
+
     cursor.execute("""
-        SELECT verso_inicial, verso_final 
-        FROM devocionais 
+        SELECT verso_inicial, verso_final
+        FROM devocionais
         WHERE livro = ? AND capitulo = ?
     """, (dados['livro'], dados['capitulo']))
-    
+
     registros = cursor.fetchall()
-    
+
+    novo_ini = dados['verso_inicial']
+    novo_fim = dados['verso_final']
+
     for v_ini, v_fim in registros:
         if v_ini is None or v_fim is None:
             continue
-            
-        # Verifica se há interseção entre os intervalos
-        novo_ini = dados['verso_inicial']
-        novo_fim = dados['verso_final']
-        
-        # Há sobreposição se:
-        # - O novo começo está dentro do intervalo antigo, OU
-        # - O novo fim está dentro do intervalo antigo, OU
-        # - O novo intervalo contém completamente o antigo
-        if (v_ini <= novo_ini <= v_fim or 
+        if (v_ini <= novo_ini <= v_fim or
             v_ini <= novo_fim <= v_fim or
             (novo_ini <= v_ini and novo_fim >= v_fim)):
             return True
-    
+
     return False
 
 def ja_enviado_hoje(cursor: sqlite3.Cursor, hoje: str) -> bool:
@@ -158,27 +139,22 @@ def ja_enviado_hoje(cursor: sqlite3.Cursor, hoje: str) -> bool:
 def extrair_referencia(texto: str) -> str:
     linhas = texto.splitlines()
     encontrou_versiculos = False
-    
-    for i, line in enumerate(linhas):
-        line_original = line
+
+    for line in linhas:
         line = line.strip()
-        
-        # Marca que encontrou a seção de versículos (com ou sem asteriscos)
+
         if line in ("*[VERSÍCULOS]*", "[VERSÍCULOS]", "*[VERSICULOS]*", "[VERSICULOS]"):
             encontrou_versiculos = True
             continue
-        
-        # Se já passou por [VERSÍCULOS], procura a referência nas próximas linhas
+
         if encontrou_versiculos:
-            # Padrão 1: *Livro Cap:Verso-Verso (Versão)*
             m = re.match(r"^\*(.+?)\s*\(([^)]+)\)\*$", line)
             if m:
                 ref = m.group(1).strip()
                 versao = m.group(2).strip()
                 if re.search(r"\d+\s*:\s*\d+", ref):
                     return f"{ref} ({versao})"
-            
-            # Padrão 2: Livro Cap:Verso-Verso (Versão) [sem asteriscos]
+
             m2 = re.match(r"^(.+?)\s+(\d+)\s*:\s*(\d+(?:\s*-\s*\d+)?)\s*\(([^)]+)\)\s*$", line)
             if m2:
                 livro = m2.group(1).strip()
@@ -186,102 +162,70 @@ def extrair_referencia(texto: str) -> str:
                 versos = m2.group(3).strip()
                 versao = m2.group(4).strip()
                 return f"{livro} {cap}:{versos} ({versao})"
-            
-            # Padrão 3: *[Livro Cap:Verso-Verso] (Versão)*
+
             m3 = re.match(r"^\*\[\s*(.+?)\s*\]\s*\(\s*([^)]+)\s*\)\*$", line)
             if m3:
                 ref = m3.group(1).strip()
                 versao = m3.group(2).strip()
                 if re.search(r"\d+\s*:\s*\d+", ref):
                     return f"{ref} ({versao})"
-            
-            # Se chegou numa linha que parece ser versículo (começa com número - texto)
-            # então a referência não foi encontrada, continua procurando
+
             if re.match(r"^\d+\s*-\s*.+", line):
                 continue
 
-    raise RuntimeError("Não foi possível extrair a referência bíblica do texto. Verifique se está no formato: Livro Cap:Verso-Verso (Versão) logo após [VERSÍCULOS]")
+    raise RuntimeError("Não foi possível extrair a referência bíblica do texto.")
 
 def validar_formato_devocional(texto: str) -> tuple[bool, str]:
-    """
-    Valida se o devocional está no formato correto.
-    Retorna (válido: bool, mensagem_erro: str)
-    """
     linhas = texto.splitlines()
-    
-    # 1. Deve começar com [VERSÍCULOS] ou *[VERSÍCULOS]*
+
     tem_versiculos = False
     for line in linhas[:5]:
         line_clean = line.strip()
         if line_clean in ("*[VERSÍCULOS]*", "[VERSÍCULOS]", "*[VERSICULOS]*", "[VERSICULOS]"):
             tem_versiculos = True
             break
-    
     if not tem_versiculos:
         return False, "Falta a seção [VERSÍCULOS] no início"
-    
-    # 2. Deve ter apenas UMA referência bíblica (não múltiplas traduções)
+
     referencias_encontradas = []
     for line in linhas:
         line = line.strip()
-        # Procura padrões como: *Romanos 9:14-18 (NVI)* ou Romanos 9:14-18 (NVI)
         if re.match(r"^\*?[A-Za-zÀ-ú\s]+\d+:\d+(-\d+)?\s*\([^)]+\)\*?$", line):
             referencias_encontradas.append(line)
-    
+
     if len(referencias_encontradas) == 0:
         return False, "Nenhuma referência bíblica encontrada"
-    
     if len(referencias_encontradas) > 1:
-        return False, f"Múltiplas traduções detectadas! Encontrei {len(referencias_encontradas)} referências: {', '.join(referencias_encontradas)}. Use apenas UMA tradução!"
-    
-    # 3. Deve ter a seção [CONTEXTO] ou *[CONTEXTO]*
-    tem_contexto = False
-    for line in linhas:
-        line_clean = line.strip()
-        if line_clean in ("*[CONTEXTO]*", "[CONTEXTO]"):
-            tem_contexto = True
-            break
-    
+        return False, f"Múltiplas traduções detectadas! Encontrei {len(referencias_encontradas)} referências."
+
+    tem_contexto = any(line.strip() in ("*[CONTEXTO]*", "[CONTEXTO]") for line in linhas)
     if not tem_contexto:
         return False, "Falta a seção [CONTEXTO]"
-    
-    # 4. Deve ter a seção [PARA PENSAR] ou *[PARA PENSAR]*
-    tem_pensar = False
-    for line in linhas:
-        line_clean = line.strip()
-        if line_clean in ("*[PARA PENSAR]*", "[PARA PENSAR]"):
-            tem_pensar = True
-            break
-    
+
+    tem_pensar = any(line.strip() in ("*[PARA PENSAR]*", "[PARA PENSAR]") for line in linhas)
     if not tem_pensar:
         return False, "Falta a seção [PARA PENSAR]"
-    
+
     return True, "OK"
 
 def normalizar_formato(texto: str) -> str:
-    """
-    Normaliza o formato do devocional, adicionando asteriscos onde faltam.
-    Garante que as seções e referências estejam no formato padrão.
-    """
     linhas = texto.splitlines()
     linhas_normalizadas = []
-    
+
     for line in linhas:
         line_stripped = line.strip()
-        
-        # Normaliza seções: [ALGO] → *[ALGO]*
+
         if line_stripped in ("[VERSÍCULOS]", "[VERSICULOS]"):
             linhas_normalizadas.append("*[VERSÍCULOS]*")
         elif line_stripped in ("[CONTEXTO]",):
             linhas_normalizadas.append("*[CONTEXTO]*")
         elif line_stripped in ("[PARA PENSAR]",):
             linhas_normalizadas.append("*[PARA PENSAR]*")
-        # Normaliza referência bíblica sem asteriscos: Livro 1:1-2 (NVI) → *Livro 1:1-2 (NVI)*
         elif re.match(r"^[A-Za-zÀ-ú\s]+\d+:\d+(-\d+)?\s*\([^)]+\)$", line_stripped):
             linhas_normalizadas.append(f"*{line_stripped}*")
         else:
             linhas_normalizadas.append(line)
-    
+
     return "\n".join(linhas_normalizadas)
 
 def gerar_devocional(client: genai.Client, cursor: sqlite3.Cursor, data: str) -> tuple[str, str]:
@@ -388,19 +332,22 @@ def gerar_devocional(client: genai.Client, cursor: sqlite3.Cursor, data: str) ->
     raise RuntimeError("Não consegui gerar um devocional com referência inédita após várias tentativas.")
 
 def verificar_envio_bem_sucedido() -> bool:
-    """
-    Verifica se o Node.js realmente conseguiu enviar a mensagem
-    lendo o arquivo de status gerado por ele.
-    """
     if not SEND_STATUS_PATH.exists():
         return False
-    
     try:
-        with open(SEND_STATUS_PATH, 'r') as f:
+        with open(SEND_STATUS_PATH, "r", encoding="utf-8") as f:
             status = json.load(f)
-            return status.get('success', False)
+        return bool(status.get("success", False))
     except:
         return False
+
+def read_send_status() -> dict | None:
+    if not SEND_STATUS_PATH.exists():
+        return None
+    try:
+        return json.loads(SEND_STATUS_PATH.read_text(encoding="utf-8"))
+    except:
+        return None
 
 def job_diario() -> None:
     require_env("GROUP_ID")
@@ -436,49 +383,31 @@ Deus é contigo.🤍
         OUTBOX_PATH.write_text(texto_final, encoding="utf-8")
         print("✅ Mensagem salva em outbox.txt")
 
-        # Limpa status anterior
-        if SEND_STATUS_PATH.exists():
-            SEND_STATUS_PATH.unlink()
+        dados = parsear_referencia(referencia)
+        hash_msg = hash_texto(devocional)
 
-        print("Enviando mensagem pelo bot...")
-        
-        result = subprocess.run(
-            ["npx", "tsx", str(NODE_SENDER_PATH)],
-            capture_output=True,
-            text=True,
-            timeout=180,
-            cwd=str(BASE_DIR),
-        )
-        
-        # Aguarda um momento para o arquivo de status ser criado
-        time.sleep(2)
-        
-        # Verifica se realmente enviou
-        if verificar_envio_bem_sucedido():
-            print("✅ Mensagem CONFIRMADA como enviada pelo WhatsApp!")
-            
-            # Só salva no banco se realmente enviou
-            dados = parsear_referencia(referencia)
-            hash_msg = hash_texto(devocional)
+        if not dados:
+            print("⚠️ Não consegui parsear referência. Salvando só o texto.")
+            cursor.execute(
+                """INSERT INTO devocionais (data, referencia, mensagem, hash_mensagem)
+                VALUES (?, ?, ?, ?)""",
+                (hoje, referencia, texto_final, hash_msg),
+            )
+            conn.commit()
+            return
 
-            try:
-                cursor.execute(
-                    """INSERT INTO devocionais 
-                    (data, referencia, mensagem, hash_mensagem, livro, capitulo, verso_inicial, verso_final) 
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (hoje, referencia, texto_final, hash_msg,
-                     dados['livro'], dados['capitulo'], dados['verso_inicial'], dados['verso_final'])
-                )
-                conn.commit()
-                print(f"✅ Devocional registrado com sucesso. Ref: {referencia}")
-            except sqlite3.IntegrityError:
-                print("⚠️ Já existia registro pra essa data/referência/hash. Não inseri de novo.")
-        else:
-            print(f"❌ FALHA no envio da mensagem!")
-            print(f"STDOUT: {result.stdout}")
-            print(f"STDERR: {result.stderr}")
-            print("⚠️ NÃO foi salvo no banco de dados.")
-
+        try:
+            cursor.execute(
+                """INSERT INTO devocionais
+                (data, referencia, mensagem, hash_mensagem, livro, capitulo, verso_inicial, verso_final)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (hoje, referencia, texto_final, hash_msg,
+                 dados['livro'], dados['capitulo'], dados['verso_inicial'], dados['verso_final'])
+            )
+            conn.commit()
+            print(f"✅ Devocional gerado e salvo. Ref: {referencia}")
+        except sqlite3.IntegrityError:
+            print("⚠️ Já existe registro para esta data/referência/hash.")
     finally:
         conn.close()
 

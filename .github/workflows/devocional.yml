@@ -104,11 +104,44 @@ jobs:
             echo "Nenhum database.zip encontrado. Primeira execução?"
           fi
 
-      - name: Executar script Python
+      - name: Executar script Python (gerar conteúdo)
         run: python main.py
+
+      - name: Verificar se outbox.txt foi gerado
+        run: |
+          if [ ! -f outbox.txt ]; then
+            echo "❌ ERRO: outbox.txt não foi gerado pelo Python"
+            exit 1
+          fi
+          echo "✅ outbox.txt encontrado"
+          echo "Conteúdo:"
+          head -n 10 outbox.txt
+
+      - name: Enviar mensagem via WhatsApp
+        run: npx tsx index-send-message.ts
+
+      - name: Verificar status do envio
+        run: |
+          if [ -f send_status.json ]; then
+            echo "Status do envio:"
+            cat send_status.json
+            
+            # Verificar se foi sucesso
+            if grep -q '"success": *true' send_status.json; then
+              echo "✅ Mensagem enviada com sucesso!"
+              exit 0
+            else
+              echo "❌ Falha no envio da mensagem"
+              exit 1
+            fi
+          else
+            echo "❌ send_status.json não foi gerado"
+            exit 1
+          fi
 
       # ↓ STEP ADICIONADO: empacota o banco após a execução
       - name: Empacotar database.zip
+        if: success()
         run: |
           # Ajuste o nome do arquivo/pasta do seu banco aqui
           if [ -f database.db ]; then

@@ -1,25 +1,76 @@
-import makeWASocket, { DisconnectReason, useMultiFileAuthState, WAMessageStatus } from '@whiskeysockets/baileys'
+import makeWASocket, {
+    DisconnectReason,
+    useMultiFileAuthState,
+    WAMessageStatus,
+    proto,
+} from '@whiskeysockets/baileys'
 import { Boom } from '@hapi/boom'
 import qrcode from 'qrcode-terminal'
-import { readFileSync, writeFileSync } from 'fs'
+import { readFileSync, writeFileSync, existsSync } from 'fs'
 
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
 
 interface SendStatus {
-    success: boolean;
-    timestamp: string;
-    error?: string;
+    success: boolean
+    timestamp: string
+    error?: string
+    messageId?: string
+    remoteJid?: string
+}
+
+const STATUS_FILE = 'send_status.json'
+const OUTBOX_FILE = 'outbox.txt'
+const AUTH_DIR = 'auth_info_baileys'
+
+function writeStatus(status: SendStatus) {
+    writeFileSync(STATUS_FILE, JSON.stringify(status, null, 2))
+}
+
+function safeReadStatus(): SendStatus | null {
+    try {
+        if (!existsSync(STATUS_FILE)) return null
+        return JSON.parse(readFileSync(STATUS_FILE, 'utf-8'))
+    } catch {
+        return null
+    }
 }
 
 async function connectToWhatsApp() {
-    const { state, saveCreds } = await useMultiFileAuthState("auth_info_baileys");
+    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR)
 
     const sock = makeWASocket({
         auth: state,
-        printQRInTerminal: true,
-    });
+        printQRInTerminal: false,
+        syncFullHistory: false,
+    })
 
-    let resolved = false;
+    let finished = false
+    let sent = false
+    let lastMessageKey: proto.IMessageKey | undefined
+
+    const overallTimeoutMs = 180_000
+    const receiptTimeoutMs = 10_000
+
+    const overallTimer = setTimeout(() => {
+        if (!finished && !sent) {
+            writeStatus({
+                success: false,
+                timestamp: new Date().toISOString(),
+                error: `Timeout geral (${overallTimeoutMs / 1000}s)`,
+            })
+            finished = true
+            process.exit(1)
+        }
+    }, overallTimeoutMs)
+
+    const doneExit = (code: number) => {
+        if (finished) return
+        finished = true
+        clearTimeout(overallTimer)
+        setTimeout(() => process.exit(code), 200) // micro delay pra flush
+    }
+
+    sock.ev.on('creds.update', saveCreds)
 
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update
@@ -30,76 +81,106 @@ async function connectToWhatsApp() {
         }
 
         if (connection === 'close') {
-            const shouldReconnect = (lastDisconnect?.error as Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log('Conexão fechada:', lastDisconnect?.error?.message);
+            const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode
+            const message = lastDisconnect?.error?.message || 'Conexão fechada'
 
-            if (!resolved) {
-                const status: SendStatus = {
-                    success: false,
-                    timestamp: new Date().toISOString(),
-                    error: lastDisconnect?.error?.message || 'Conexão fechada antes do envio'
-                };
-                writeFileSync('send_status.json', JSON.stringify(status, null, 2));
+            console.log('Conexão fechada:', message)
+
+            // Se já enviou, NÃO sobrescreve sucesso com falha
+            if (!sent) {
+                const previous = safeReadStatus()
+                if (!previous?.success) {
+                    writeStatus({
+                        success: false,
+                        timestamp: new Date().toISOString(),
+                        error: message,
+                    })
+                }
             }
 
-            if (shouldReconnect && !resolved) {
-                console.log('Tentando reconectar...');
-                setTimeout(() => connectToWhatsApp(), 5000);
+            const shouldReconnect = statusCode !== DisconnectReason.loggedOut
+
+            // Se não enviou e pode reconectar, tenta; senão finaliza
+            if (!sent && shouldReconnect && !finished) {
+                console.log('Tentando reconectar em 5s...')
+                setTimeout(() => connectToWhatsApp(), 5000)
+            } else {
+                doneExit(sent ? 0 : 1)
             }
         }
-        else if (connection === 'open') {
-            console.log('✅ Conexão estabelecida com WhatsApp');
+
+        if (connection === 'open') {
+            console.log('✅ Conexão estabelecida com WhatsApp')
+
+            // Aguardar sincronização inicial antes de enviar
+            await new Promise(resolve => setTimeout(resolve, 5000))
 
             try {
-                const mensagem = readFileSync('outbox.txt', 'utf-8');
-                const groupId = process.env.GROUP_ID || '120363424073386097@g.us';
+                const mensagem = readFileSync(OUTBOX_FILE, 'utf-8')
+                const groupId = process.env.GROUP_ID || '120363424073386097@g.us'
 
-                await sock.groupMetadata(groupId);
-                const result = await sock.sendMessage(groupId, { text: mensagem });
-
-                writeFileSync('send_status.json', JSON.stringify({
-                    success: true,
-                    timestamp: new Date().toISOString()
-                }, null, 2));
-
+                // Validar metadados do grupo
+                let groupMetadata
                 try {
-                    await waitForDeliveredOrReceipt(sock, result?.key, 30000);
-                    console.log('📬 Delivery/receipt confirmado.');
-                    console.log('✅ Mensagem enviada com sucesso!');
-                } catch (e) {
-                    console.warn('⚠️ Não veio receipt a tempo (ok em grupo). Seguindo...');
+                    groupMetadata = await sock.groupMetadata(groupId)
+                    console.log(`📱 Grupo encontrado: ${groupMetadata.subject}`)
+                } catch (metaError: any) {
+                    throw new Error(`Grupo não encontrado ou inacessível: ${metaError?.message || metaError}`)
                 }
 
-                resolved = true;
-                console.log('Encerrando conexão...');
-                await new Promise(r => setTimeout(r, 2000));
-                process.exit(0);
-            } catch (err) {
-                console.error('❌ Erro ao enviar mensagem:', err);
+                console.log('📤 Enviando mensagem...')
+                const result = await sock.sendMessage(groupId, { text: mensagem })
 
-                const status: SendStatus = {
+                if (!result?.key) {
+                    throw new Error('Resposta inválida do sendMessage (sem key)')
+                }
+
+                lastMessageKey = result.key
+                sent = true
+
+                writeStatus({
+                    success: true,
+                    timestamp: new Date().toISOString(),
+                    messageId: lastMessageKey.id || undefined,
+                    remoteJid: lastMessageKey.remoteJid || groupId,
+                })
+
+                console.log('✅ Mensagem enviada com sucesso!')
+
+                try {
+                    await waitForDeliveredOrReceipt(sock, lastMessageKey, receiptTimeoutMs)
+                    console.log('📬 Delivery/receipt confirmado.')
+                } catch {
+                    console.warn('⚠️ Sem receipt a tempo (normal em grupo). Seguindo…')
+                }
+
+                console.log('🏁 Encerrando...')
+                doneExit(0)
+            } catch (err: any) {
+                console.error('❌ Erro ao enviar mensagem:', err?.message || err)
+                console.error('Stack trace:', err?.stack)
+
+                writeStatus({
                     success: false,
                     timestamp: new Date().toISOString(),
-                    error: err instanceof Error ? err.message : String(err)
-                };
-                writeFileSync('send_status.json', JSON.stringify(status, null, 2));
+                    error: err instanceof Error ? err.message : String(err),
+                })
 
-                resolved = true;
-                process.exit(1);
+                doneExit(1)
             }
         }
-    });
+    })
 
-    function waitForDeliveredOrReceipt(sock: any, msgKey: any, timeoutMs = 60000) {
+    function waitForDeliveredOrReceipt(sock: any, msgKey: any, timeoutMs = 7000) {
         return new Promise<void>((resolve, reject) => {
-            const done = () => {
+            const cleanup = () => {
                 sock.ev.off('messages.update', onMsgUpdate)
                 sock.ev.off('message-receipt.update', onReceiptUpdate)
                 clearTimeout(t)
             }
 
             const t = setTimeout(() => {
-                done()
+                cleanup()
                 reject(new Error('Timeout esperando delivery/receipt'))
             }, timeoutMs)
 
@@ -108,19 +189,20 @@ async function connectToWhatsApp() {
                     if (u.key?.id === msgKey?.id && u.key?.remoteJid === msgKey?.remoteJid) {
                         const st = u.update?.status
                         if (typeof st === 'number' && st >= WAMessageStatus.DELIVERY_ACK) {
-                            done()
+                            cleanup()
                             resolve()
+                            return
                         }
                     }
                 }
             }
 
-            // Em grupos, o “recebido por quem” costuma vir aqui
             const onReceiptUpdate = (receipts: any[]) => {
                 for (const r of receipts) {
                     if (r.key?.id === msgKey?.id) {
-                        done()
+                        cleanup()
                         resolve()
+                        return
                     }
                 }
             }
@@ -129,23 +211,17 @@ async function connectToWhatsApp() {
             sock.ev.on('message-receipt.update', onReceiptUpdate)
         })
     }
-
-    sock.ev.on('creds.update', saveCreds);
-
-    setTimeout(() => {
-        if (!resolved) {
-            console.error('❌ Timeout de conexão');
-
-            const status: SendStatus = {
-                success: false,
-                timestamp: new Date().toISOString(),
-                error: 'Timeout de conexão (30s)'
-            };
-            writeFileSync('send_status.json', JSON.stringify(status, null, 2));
-
-            process.exit(1);
-        }
-    }, 30000);
 }
 
-connectToWhatsApp();
+connectToWhatsApp().catch((e) => {
+    console.error('Falha fatal ao iniciar:', e)
+    writeFileSync(
+        'send_status.json',
+        JSON.stringify(
+            { success: false, timestamp: new Date().toISOString(), error: String(e) },
+            null,
+            2,
+        ),
+    )
+    process.exit(1)
+})
