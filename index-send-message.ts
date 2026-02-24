@@ -1,4 +1,4 @@
-import makeWASocket, { DisconnectReason, useMultiFileAuthState, WAMessageStatus, proto, } from '@whiskeysockets/baileys'
+import makeWASocket, { DisconnectReason, useMultiFileAuthState, WAMessageStatus, proto, fetchLatestBaileysVersion } from '@whiskeysockets/baileys'
 import { Boom } from '@hapi/boom'
 import qrcode from 'qrcode-terminal'
 import { readFileSync, writeFileSync, existsSync } from 'fs'
@@ -32,7 +32,12 @@ function safeReadStatus(): SendStatus | null {
 
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR)
-    const sock = makeWASocket({ auth: state, printQRInTerminal: false, syncFullHistory: false, })
+    const { version } = await fetchLatestBaileysVersion()
+    const sock = makeWASocket({
+        auth: state,
+        version,
+        syncFullHistory: false
+    })
 
     let finished = false
     let sent = false
