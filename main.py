@@ -279,11 +279,11 @@ def gerar_devocional(client: genai.Client, cursor: sqlite3.Cursor, data: str) ->
 
                 [PARA PENSAR]
 
-                [Pergunta pessoal e prática que ajude o leitor a examinar sua vida à luz do texto. Use palavras fáceis. - Resuma a pergunta, pois está muito longa e difícil de interpretar durante a leitura. O objetivo é que o leitor pense: "Como isso se aplica à minha vida? O que Deus quer me dizer? O que eu preciso mudar?" - Faça com poucas palavras, cerca de 30 a 50 palavras.]
+                [Pergunta pessoal e prática que ajude o leitor a examinar sua vida à luz do texto. Use palavras fáceis. - Resuma a pergunta, pois está muito longa e difícil de interpretar durante a leitura. O objetivo é que o leitor pense: "Como isso se aplica à minha vida? O que Deus quer me dizer? O que eu preciso mudar?" - Faça com poucas palavras, cerca de 20 a 30 palavras.]
 
-                [Pergunta que incentive a mudança de atitude ou pensamento. - Resuma a pergunta, pois está muito longa e difícil de interpretar durante a leitura. O objetivo é que o leitor pense: "Como isso se aplica à minha vida? O que Deus quer me dizer? O que eu preciso mudar?" - Faça com poucas palavras, cerca de 30 a 50 palavras.]
+                [Pergunta que incentive a mudança de atitude ou pensamento. - Resuma a pergunta, pois está muito longa e difícil de interpretar durante a leitura. O objetivo é que o leitor pense: "Como isso se aplica à minha vida? O que Deus quer me dizer? O que eu preciso mudar?" - Faça com poucas palavras, cerca de 20 a 30 palavras.]
 
-                [Pergunta que aponte para a graça e o poder de Deus como habilitadores da transformação. - Resuma a pergunta, pois está muito longa e difícil de interpretar durante a leitura. O objetivo é que o leitor pense: "Como isso se aplica à minha vida? O que Deus quer me dizer? O que eu preciso mudar?" - Faça com poucas palavras, cerca de 30 a 50 palavras.]
+                [Pergunta que aponte para a graça e o poder de Deus como habilitadores da transformação. - Resuma a pergunta, pois está muito longa e difícil de interpretar durante a leitura. O objetivo é que o leitor pense: "Como isso se aplica à minha vida? O que Deus quer me dizer? O que eu preciso mudar?" - Faça com poucas palavras, cerca de 20 a 30 palavras.]
 
                 DIRETRIZES ESSENCIAIS DE TOM E CONTEÚDO (NÃO IGNORE):
                 Seja Educado e Sábio: A verdade pode ser dura, mas a comunicação deve ser respeitosa. O alvo é restaurar, não esmagar.
