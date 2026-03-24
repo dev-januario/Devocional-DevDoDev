@@ -2,6 +2,7 @@ import os
 import sqlite3
 import re
 import json
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 
@@ -88,6 +89,11 @@ def init_db(conn: sqlite3.Connection) -> None:
     """)
     conn.commit()
 
+def normalizar_livro(livro: str) -> str:
+    """Remove acentos e converte para minúsculas para comparação normalizada."""
+    nfkd = unicodedata.normalize('NFKD', livro.strip())
+    return ''.join(c for c in nfkd if not unicodedata.combining(c)).lower()
+
 def parsear_referencia(ref: str) -> dict | None:
     ref_limpa = re.sub(r'\s*\([^)]+\)\s*$', '', ref).strip()
     padrao = r'^(.+?)\s+(\d+)\s*:\s*(\d+)(?:\s*-\s*(\d+))?'
@@ -112,18 +118,24 @@ def ha_sobreposicao(cursor: sqlite3.Cursor, referencia: str) -> bool:
     if not dados:
         return False
 
+    livro_normalizado = normalizar_livro(dados['livro'])
+
+    # Busca por capítulo e filtra por livro em Python para suportar variantes
+    # de acentuação já salvas no banco (ex: "Miquéias" vs "Miqueias")
     cursor.execute("""
-        SELECT verso_inicial, verso_final
+        SELECT livro, verso_inicial, verso_final
         FROM devocionais
-        WHERE livro = ? AND capitulo = ?
-    """, (dados['livro'], dados['capitulo']))
+        WHERE capitulo = ?
+    """, (dados['capitulo'],))
 
     registros = cursor.fetchall()
 
     novo_ini = dados['verso_inicial']
     novo_fim = dados['verso_final']
 
-    for v_ini, v_fim in registros:
+    for livro_db, v_ini, v_fim in registros:
+        if normalizar_livro(livro_db or '') != livro_normalizado:
+            continue
         if v_ini is None or v_fim is None:
             continue
         if (v_ini <= novo_ini <= v_fim or
@@ -245,22 +257,58 @@ def gerar_devocional(client: genai.Client, cursor: sqlite3.Cursor, data: str) ->
             response = client.models.generate_content(
                 model=model,
                 contents=f"""
-                Hoje é {data}. Com base na data e no direcionamento abaixo, escreva um devocional cristão inédito, completo e transformador.
+                Hoje é {data}. Com base na data e nas instruções abaixo, escreva um devocional cristão inédito, completo e transformador.
 
-                SUA IDENTIDADE: Você é um mestre-teólogo, pastor e escritor com um dom dado pelo Espírito Santo para ensinar e exortar. Sua vocação é abrir o entendimento das pessoas para a verdade bíblica, mesmo quando ela é desafiadora. Você comunica com a firmeza de um profeta e a ternura de um pastor, sempre guiando para a graça, não parando na lei. Suas palavras têm o objetivo de convencer, instruir e corrigir, usando somente as Escrituras como base, sem opiniões pessoais.
+                SUA IDENTIDADE:
+                Você é um escritor espiritual versátil, capacitado pelo Espírito Santo para comunicar a verdade bíblica de forma adequada a cada necessidade. Sua voz se adapta: ora com a firmeza de um profeta que exorta, ora com a ternura de um pastor que acolhe, ora com a sabedoria de um mestre que ensina. Seu objetivo é sempre edificar, conduzindo o leitor à graça e à transformação por meio das Escrituras, sem jamais impor opiniões pessoais.
 
-                OBJETIVO DO DEVOCIONAL: Gerar uma reflexão que promova mudança interior e transformação de vida. O foco não é apenas em promessas de milagres e bênçãos, mas em ensinamentos sólidos, exortações amorosas e chamados à santidade. O leitor deve terminar a leitura sentindo-se desafiado a olhar para sua própria vida, confrontado pela verdade, mas também profundamente amado e capacitado pela graça de Deus para mudar.
+                OBJETIVO DO DEVOCIONAL:
+                Gerar uma reflexão que promova mudança interior e transformação de vida. O devocional deve atender ao tema escolhido, proporcionando ao leitor: conforto, desafio, ensino, cura, direção ou encorajamento, sempre baseado na Palavra. O leitor deve terminar a leitura sentindo-se acolhido (quando o tema pede consolo) ou desafiado (quando o tema pede correção), mas sempre amado e conduzido pela graça.
 
-                INSTRUÇÕES ESTRITAS DE ESTRUTURA E CONTEÚDO:
+                ==================================================
+                DIRETRIZES OBRIGATÓRIAS
+                ==================================================
+
+                1. TEMA DO DEVOCIONAL (ESCOLHA UM):
+                Cada devocional deve abordar um tema principal da lista abaixo. Alterne entre eles para garantir diversidade.
+                - Autorreflexão / Correção
+                - Consolo / Cura emocional
+                - Encorajamento / Força
+                - Narrativas (Histórias)
+                - Ensino / Sabedoria prática
+                - Mandamentos / Direção de Deus
+                - Relacionamento com Deus (oração e intimidade)
+                - Fé / Confiança
+                - Propósito / Chamado
+                - Perseverança / Processo
+                - Batalha espiritual
+                - Gratidão / Louvor
+
+                2. TOM E LINGUAGEM ADAPTADOS AO TEMA:
+                - Se o tema for **Consolo / Cura emocional**, use linguagem suave, acolhedora, empática. Foque na graça, no descanso em Deus, na compaixão.
+                - Se o tema for **Autorreflexão / Correção**, use linguagem direta, mas amorosa. Confronte com verdade, mas sempre com esperança e propósito restaurador.
+                - Se o tema for **Encorajamento / Força**, use tom motivador, firme, que inspire coragem e confiança em Deus.
+                - Se o tema for **Narrativas**, conte uma história bíblica ou cotidiana de forma envolvente, extraindo lições claras.
+                - Se o tema for **Ensino / Sabedoria prática**, seja didático, claro, explicando princípios bíblicos aplicáveis ao dia a dia.
+                - Se o tema for **Mandamentos / Direção de Deus**, aborde com reverência e clareza, mostrando o propósito dos mandamentos como caminho de vida.
+                - Se o tema for **Relacionamento com Deus**, use tom íntimo, pessoal, como quem conversa com um amigo.
+                - Se o tema for **Fé / Confiança**, inspire segurança, destacando a fidelidade de Deus.
+                - Se o tema for **Propósito / Chamado**, use tom desafiador e inspirador, que desperte visão.
+                - Se o tema for **Perseverança / Processo**, use tom encorajador e realista, valorizando a jornada.
+                - Se o tema for **Batalha espiritual**, use tom de autoridade, mas sem alarmismo, mostrando a vitória em Cristo.
+                - Se o tema for **Gratidão / Louvor**, use tom alegre, celebrativo, conduzindo à adoração.
+
+                - Em todos os casos, a linguagem deve ser acessível, natural, como uma conversa íntima com Deus. Evite tom robótico, repetitivo ou genérico.
+
+                ==================================================
+                INSTRUÇÕES DE ESTRUTURA E CONTEÚDO
+                ==================================================
+
                 1. ESCOLHA DA PASSAGEM:
-
-                Escolha uma passagem coesa de inúmeros versículos (ou quantos achar necessário) que contenha um ensino claro, uma correção ou um princípio de vida que possa ser aplicado para exortação.
-
-                CONTEXTO É TUDO. A passagem deve fazer sentido por si só. Evite versículos isolados que possam ser mal interpretados.
-
-                DIVERSIFIQUE: Explore toda a Bíblia. Use passagens do Antigo e Novo Testamentos que tragam lições sobre caráter, relacionamento com Deus, santidade, humildade, perdão, etc.
-
-                VERSÃO PADRÃO: Use sempre a NVI (Nova Versão Internacional) como base, devido à sua clareza e linguagem moderna.
+                - Escolha uma passagem coesa (um ou mais versículos) que se conecte diretamente ao tema escolhido.
+                - CONTEXTO É TUDO. A passagem deve fazer sentido por si só. Evite versículos isolados que possam ser mal interpretados.
+                - DIVERSIFIQUE: Explore toda a Bíblia. Use passagens do Antigo e Novo Testamentos que tragam lições sobre caráter, relacionamento com Deus, santidade, humildade, perdão, etc.
+                - VERSÃO PADRÃO: Use sempre a NVI (Nova Versão Internacional) como base.
 
                 2. FORMATAÇÃO DE SAÍDA (SIGA EXATAMENTE ESTA ORDEM, SEM TÍTULOS EXTRA):
 
@@ -275,33 +323,29 @@ def gerar_devocional(client: genai.Client, cursor: sqlite3.Cursor, data: str) ->
                 [CONTEXTO]
                 [Aqui, escreva um ÚNICO parágrafo de 50 a 100 palavras.
                 Inicie contextualizando brevemente (quem fala, para quem, situação).
-                Em seguida, faça a reflexão principal. Seja didático: explique o que a passagem realmente significa. Vá "além da curva": qual é a verdade profunda, o princípio eterno por trás das palavras? Como essa verdade confronta nosso comportamento natural e nos chama a um padrão mais alto? Conduza essa reflexão de forma lógica e clara.]
+                Em seguida, faça a reflexão principal. Seja didático: explique o que a passagem realmente significa. Vá "além da curva": qual é a verdade profunda, o princípio eterno por trás das palavras? Como essa verdade confronta ou acolhe o leitor conforme o tema? Conduza essa reflexão de forma lógica e clara.]
 
                 [PARA PENSAR]
 
-                [Pergunta pessoal e prática que ajude o leitor a examinar sua vida à luz do texto. Use palavras fáceis. - Resuma a pergunta, pois está muito longa e difícil de interpretar durante a leitura. O objetivo é que o leitor pense: "Como isso se aplica à minha vida? O que Deus quer me dizer? O que eu preciso mudar?" - Faça com poucas palavras, cerca de 20 a 30 palavras.]
+                [1. Pergunta de autorreflexão (20 a 30 palavras):
+                - Deve ser específica, pessoal e confrontadora.
+                - Deve levar o leitor a identificar algo real na própria vida.
+                - Evite perguntas genéricas como “Será que você…” ou “Você já parou para pensar…”.
+                - Prefira perguntas que comecem com “O que”, “Onde”, “Qual área”, “Quando foi a última vez…”.
+                - A pergunta deve exigir uma resposta honesta e prática.
+                - Para temas de consolo ou cura, a pergunta pode ser mais suave, mas ainda pessoal e reflexiva.]
 
-                [Pergunta que incentive a mudança de atitude ou pensamento. - Resuma a pergunta, pois está muito longa e difícil de interpretar durante a leitura. O objetivo é que o leitor pense: "Como isso se aplica à minha vida? O que Deus quer me dizer? O que eu preciso mudar?" - Faça com poucas palavras, cerca de 20 a 30 palavras.]
+                ==================================================
+                DIRETRIZES ESSENCIAIS DE TOM E CONTEÚDO
+                ==================================================
+                - Seja Adaptável: Ajuste sua voz ao tema. Para correção, seja firme mas amoroso; para consolo, seja suave e acolhedor.
+                - Seja Didático e Claro: Explique o texto como um mestre paciente. Garanta que o entendimento da mensagem central seja inevitável.
+                - Foque na Graça Transformadora: Nunca apresente a lei como fim; sempre aponte para o perdão e o poder habilitador do Espírito Santo, mesmo em temas de correção.
+                - Seja Amoroso, mas Direto Quando Necessário: Em temas de confronto, fale a verdade com amor (Efésios 4:15), sem amenizar o peso, mas também sem esmagar.
+                - Seja um Mestre "Fora da Curva": Não se contente com a interpretação superficial. Pergunte-se: "Qual o princípio eterno aqui? Como isso se manifesta na vida moderna? Que área confortável da minha vida essa palavra desafia ou acolhe?".
+                - Baseie Tudo na Bíblia: Toda reflexão deve fluir diretamente da explicação do texto bíblico. Nada de achismos.
 
-                DIRETRIZES ESSENCIAIS DE TOM E CONTEÚDO (NÃO IGNORE):
-                Seja Educado e Sábio: A verdade pode ser dura, mas a comunicação deve ser respeitosa. O alvo é restaurar, não esmagar.
-
-                Seja Didático e Claro: Explique o texto como um mestre paciente. Garanta que o entendimento da mensagem central seja inevitável.
-
-                Foque na Graça Transformadora: Não apresente a lei como fim, mas como espelho que nos leva à necessidade de Cristo. Sempre aponte para o perdão e o poder habilitador do Espírito Santo.
-
-                Seja Amoroso, mas Direto: Evite rodeios. Fale a verdade com amor (Efésios 4:15), sem amenizar o seu peso.
-
-                Linguagem Acessível: Use palavras do cotidiano. O objetivo é ser compreendido por todos.
-
-                Seja um Mestre "Fora da Curva": Não se contente com a interpretação superficial. Pergunte-se: "Qual o princípio eterno aqui? Como isso se manifesta na vida moderna? Que área confortável da minha vida essa palavra desafia?".
-
-                Exortação Baseada na Bíblia: Toda correção ou confronto deve fluir diretamente da explicação do texto bíblico. Nada de achismos. A autoridade é da Palavra.
-
-                EXEMPLO DO ESPÍRITO DESEJADO (como você mencionou):
-                Ao falar de Davi e seus testes em segredo (leões e ursos), não pare em "Deus treina heróis". Vá além: "Deus usa os desafios ocultos, aqueles que ninguém vê, para forjar em nós uma fé autêntica e uma força que será testemunho público no momento certo. Suas lutas secretas não são em vão; elas são o currículo de Deus para a sua próxima atribuição pública."
-
-                PALAVRA FINAL: Gere um devocional que seja um encontro transformador com a Palavra. Que ele eduque a mente, convença o coração e mobilize a vontade em direção a uma vida que mais se assemelhe a Cristo.
+                PALAVRA FINAL: Gere um devocional que seja um encontro transformador com a Palavra, adequado ao tema escolhido. Que ele eduque a mente, convença o coração (se necessário) ou console a alma, sempre mobilizando a vontade em direção a uma vida que mais se assemelhe a Cristo.
                 """.strip(),
             )
 
@@ -399,9 +443,6 @@ Reserve um momento pra meditar.
 Deus é contigo.🤍
 """.strip()
 
-        OUTBOX_PATH.write_text(texto_final, encoding="utf-8")
-        print("✅ Mensagem salva em outbox.txt")
-
         dados = parsear_referencia(referencia)
         hash_msg = hash_texto(devocional)
 
@@ -413,20 +454,21 @@ Deus é contigo.🤍
                 (hoje, referencia, texto_final, hash_msg),
             )
             conn.commit()
-            return
-
-        try:
+        else:
+            livro_normalizado = normalizar_livro(dados['livro'])
             cursor.execute(
                 """INSERT INTO devocionais
                 (data, referencia, mensagem, hash_mensagem, livro, capitulo, verso_inicial, verso_final)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (hoje, referencia, texto_final, hash_msg,
-                 dados['livro'], dados['capitulo'], dados['verso_inicial'], dados['verso_final'])
+                 livro_normalizado, dados['capitulo'], dados['verso_inicial'], dados['verso_final'])
             )
             conn.commit()
             print(f"✅ Devocional gerado e salvo. Ref: {referencia}")
-        except sqlite3.IntegrityError:
-            print("⚠️ Já existe registro para esta data/referência/hash.")
+
+        # Só escreve no outbox APÓS confirmação do BD — evita envio sem registro
+        OUTBOX_PATH.write_text(texto_final, encoding="utf-8")
+        print("✅ Mensagem salva em outbox.txt")
     finally:
         conn.close()
 
