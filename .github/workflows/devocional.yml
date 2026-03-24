@@ -134,11 +134,15 @@ jobs:
           # Salva os creds atualizados em pasta temporária
           cp -r auth_info_baileys /tmp/auth_info_baileys
 
-          # Vai para a branch auth
+          # Garante ambiente limpo antes de trocar de branch
           git fetch origin auth
+          git reset --hard
+          git clean -fd
+
+          # Vai pra branch auth
           git checkout auth
 
-          # Copia os creds atualizados
+          # Atualiza os arquivos
           rm -rf auth_info_baileys
           cp -r /tmp/auth_info_baileys auth_info_baileys
 
@@ -146,7 +150,7 @@ jobs:
           git diff --cached --quiet && echo "Nada a commitar" || git commit -m "chore: update auth [skip ci]"
           git push origin auth
 
-          # Volta para a branch original
+          # Volta pra branch original
           git checkout ${{ github.ref_name }}
 
       - name: Empacotar database.zip
