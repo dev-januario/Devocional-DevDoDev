@@ -109,14 +109,20 @@ async function connectToWhatsApp() {
 
             try {
                 const mensagem = readFileSync(OUTBOX_FILE, 'utf-8')
-                const groupId = process.env.GROUP_ID || '120363424073386097@g.us'
+                const rawId = process.env.GROUP_ID || '120363424073386097@g.us'
+                // Normaliza: contatos individuais devem usar @s.whatsapp.net
+                const groupId = rawId.replace('@s.whatsapp.us', '@s.whatsapp.net')
+                const isGroup = groupId.endsWith('@g.us')
 
-                let groupMetadata
-                try {
-                    groupMetadata = await sock.groupMetadata(groupId)
-                    console.log(`📱 Grupo encontrado: ${groupMetadata.subject}`)
-                } catch (metaError: any) {
-                    throw new Error(`Grupo não encontrado ou inacessível: ${metaError?.message || metaError}`)
+                if (isGroup) {
+                    try {
+                        const groupMetadata = await sock.groupMetadata(groupId)
+                        console.log(`📱 Grupo encontrado: ${groupMetadata.subject}`)
+                    } catch (metaError: any) {
+                        throw new Error(`Grupo não encontrado ou inacessível: ${metaError?.message || metaError}`)
+                    }
+                } else {
+                    console.log(`📱 Destinatário individual: ${groupId}`)
                 }
 
                 console.log('📤 Enviando mensagem...')
