@@ -102,6 +102,8 @@ def parsear_referencia(ref: str) -> dict | None:
         return None
 
     livro = m.group(1).strip()
+    # Remove colchetes residuais caso o nome do livro venha como "[Gênesis]"
+    livro = re.sub(r'^\[|\]$', '', livro).strip()
     capitulo = int(m.group(2))
     verso_inicial = int(m.group(3))
     verso_final = int(m.group(4)) if m.group(4) else verso_inicial
@@ -200,10 +202,15 @@ def validar_formato_devocional(texto: str) -> tuple[bool, str]:
     if not tem_versiculos:
         return False, "Falta a seção [VERSÍCULOS] no início"
 
+    # Regex aceita: book opcional com número ("2 Timóteo"), colchetes ao redor
+    # do nome ("[Gênesis]") e colchetes nos versículos ("[1]-[4]")
+    _REF_PAT = re.compile(
+        r"^\*?\[?(\d+\s+)?[A-Za-zÀ-ú\s]+\]?\s*\d+\s*:\s*\[?\d+\]?(-\[?\d+\]?)?\s*\([^)]+\)\*?$"
+    )
     referencias_encontradas = []
     for line in linhas:
         line = line.strip()
-        if re.match(r"^\*?[A-Za-zÀ-ú\s]+\d+:\d+(-\d+)?\s*\([^)]+\)\*?$", line):
+        if _REF_PAT.match(line):
             referencias_encontradas.append(line)
 
     if len(referencias_encontradas) == 0:
@@ -234,8 +241,14 @@ def normalizar_formato(texto: str) -> str:
             linhas_normalizadas.append("*[CONTEXTO]*")
         elif line_stripped in ("[PARA PENSAR]",):
             linhas_normalizadas.append("*[PARA PENSAR]*")
-        elif re.match(r"^[A-Za-zÀ-ú\s]+\d+:\d+(-\d+)?\s*\([^)]+\)$", line_stripped):
-            linhas_normalizadas.append(f"*{line_stripped}*")
+        elif re.match(
+            r"^\[?(\d+\s+)?[A-Za-zÀ-ú\s]+\]?\s*\d+\s*:\s*\[?\d+\]?(-\[?\d+\]?)?\s*\([^)]+\)$",
+            line_stripped,
+        ):
+            # Remove colchetes do nome do livro e dos versículos antes de armazenar
+            linha_limpa = re.sub(r'\[(\d+)\]', r'\1', line_stripped)       # [4] → 4
+            linha_limpa = re.sub(r'\[([A-Za-zÀ-ú0-9\s]+)\]', r'\1', linha_limpa).strip()  # [Gênesis] → Gênesis
+            linhas_normalizadas.append(f"*{linha_limpa}*")
         else:
             linhas_normalizadas.append(line)
 
