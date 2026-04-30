@@ -256,8 +256,8 @@ def normalizar_formato(texto: str) -> str:
 
 def gerar_devocional(client: genai.Client, cursor: sqlite3.Cursor, data: str) -> tuple[str, str]:
     modelos = [
-        "gemini-1.5-flash",
-        "gemini-1.5-pro",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
     ]
 
     for tentativa in range(8):
