@@ -360,9 +360,8 @@ def gerar_devocional(client: genai.Client, cursor: sqlite3.Cursor, data: str) ->
             )
 
         except genai_errors.ServerError as e:
-            # 503/5xx: backoff com jitter
-            wait = min(60, 2 ** tentativa) + random.uniform(0, 1.5)
-            print(f"⚠️ Gemini/ServerError ({getattr(e, 'status_code', '5xx')}): {e}. Retry em {wait:.1f}s...")
+            wait = 60 
+            print(f"⚠️ Servidor ocupado (503). Aguardando {wait}s para tentar novamente...")
             time.sleep(wait)
             continue
         except Exception as e:
