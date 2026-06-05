@@ -20,6 +20,8 @@ load_dotenv(override=False)
 
 GROUP_ID = os.getenv("GROUP_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT")
+GEMINI_LOCATION = os.getenv("GEMINI_LOCATION", "global")
 TEST_MODE = os.getenv("TEST_MODE", "0") == "1"
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -27,6 +29,18 @@ DB_PATH = BASE_DIR / "database.db"
 OUTBOX_PATH = BASE_DIR / "outbox.txt"
 SEND_STATUS_PATH = BASE_DIR / "send_status.json"
 NODE_SENDER_PATH = BASE_DIR / "index-send-message.ts"
+
+def criar_cliente_genai() -> genai.Client:
+    usar_vertex = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "0") == "1" or bool(GOOGLE_CLOUD_PROJECT)
+
+    if usar_vertex:
+        project = require_env("GOOGLE_CLOUD_PROJECT")
+        location = os.getenv("GOOGLE_CLOUD_LOCATION", GEMINI_LOCATION)
+        print(f"ℹ️ Usando Vertex AI em location={location}")
+        return genai.Client(vertexai=True, project=project, location=location)
+
+    api_key = require_env("GEMINI_API_KEY")
+    return genai.Client(api_key=api_key)
 
 def require_env(name: str) -> str:
     value = os.getenv(name)
@@ -256,12 +270,9 @@ def normalizar_formato(texto: str) -> str:
 
 def gerar_devocional(client: genai.Client, cursor: sqlite3.Cursor, data: str) -> tuple[str, str]:
     modelos = [
-        "gemini-3.1-pro-preview",
-        "gemini-3.1-flash-lite-preview",
-        "gemini-3-pro-preview",
-        "gemini-3-flash-preview",
-        "gemini-2.5-pro",
+        "gemini-3.5-flash",
         "gemini-2.5-flash",
+        "gemini-2.5-pro",
     ]
 
     for tentativa in range(8):
@@ -427,9 +438,8 @@ def read_send_status() -> dict | None:
 
 def job_diario() -> None:
     require_env("GROUP_ID")
-    api_key = require_env("GEMINI_API_KEY")
 
-    client = genai.Client(api_key=api_key)
+    client = criar_cliente_genai()
     hoje = datetime.now().strftime("%Y-%m-%d")
 
     conn = sqlite3.connect(str(DB_PATH), timeout=30)
