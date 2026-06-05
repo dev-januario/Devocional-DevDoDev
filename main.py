@@ -255,29 +255,40 @@ def validar_formato_devocional(texto: str) -> tuple[bool, str]:
 
     return True, "OK"
 
+def _eh_linha_referencia_biblica(line: str) -> bool:
+    line_limpa = line.strip().strip("*").strip()
+    return bool(re.match(
+        r"^\[?(\d+\s+)?[A-Za-zÀ-ú\s]+\]?\s*\d+\s*:\s*\[?\d+\]?(-\[?\d+\]?)?\s*\([^)]+\)$",
+        line_limpa,
+    ))
+
 def normalizar_formato(texto: str) -> str:
     linhas = texto.splitlines()
     linhas_normalizadas = []
 
     for line in linhas:
         line_stripped = line.strip()
+        line_sem_asteriscos = line_stripped.strip("*").strip()
 
-        if line_stripped in ("[VERSÍCULOS]", "[VERSICULOS]"):
+        if re.match(r"^\[?\s*VERS[ÍI]CULOS\s*\]?$", line_sem_asteriscos, flags=re.IGNORECASE):
             linhas_normalizadas.append("*[VERSÍCULOS]*")
-        elif line_stripped in ("[CONTEXTO]",):
+        elif re.match(r"^\[?\s*CONTEXTO\s*\]?$", line_sem_asteriscos, flags=re.IGNORECASE):
             linhas_normalizadas.append("*[CONTEXTO]*")
-        elif line_stripped in ("[PARA PENSAR]",):
+        elif re.match(r"^\[?\s*PARA\s+PENSAR\s*\]?$", line_sem_asteriscos, flags=re.IGNORECASE):
             linhas_normalizadas.append("*[PARA PENSAR]*")
-        elif re.match(
-            r"^\[?(\d+\s+)?[A-Za-zÀ-ú\s]+\]?\s*\d+\s*:\s*\[?\d+\]?(-\[?\d+\]?)?\s*\([^)]+\)$",
-            line_stripped,
-        ):
+        elif _eh_linha_referencia_biblica(line_stripped):
             # Remove colchetes do nome do livro e dos versículos antes de armazenar
-            linha_limpa = re.sub(r'\[(\d+)\]', r'\1', line_stripped)       # [4] → 4
+            linha_limpa = re.sub(r'\[(\d+)\]', r'\1', line_sem_asteriscos)       # [4] → 4
             linha_limpa = re.sub(r'\[([A-Za-zÀ-ú0-9\s]+)\]', r'\1', linha_limpa).strip()  # [Gênesis] → Gênesis
             linhas_normalizadas.append(f"*{linha_limpa}*")
         else:
             linhas_normalizadas.append(line)
+
+    if "*[VERSÍCULOS]*" not in linhas_normalizadas:
+        for i, line in enumerate(linhas_normalizadas):
+            if _eh_linha_referencia_biblica(line):
+                linhas_normalizadas.insert(i, "*[VERSÍCULOS]*")
+                break
 
     return "\n".join(linhas_normalizadas)
 
@@ -286,7 +297,10 @@ def gerar_devocional(client: genai.Client, cursor: sqlite3.Cursor, data: str) ->
     if not modelos:
         modelos = ["gemini-3.5-flash"]
 
-    for tentativa in range(8):
+    max_tentativas = 12
+    tentativas_503 = 0
+
+    for tentativa in range(max_tentativas):
         model = modelos[min(tentativa, len(modelos) - 1)]
 
         try:
@@ -386,7 +400,8 @@ def gerar_devocional(client: genai.Client, cursor: sqlite3.Cursor, data: str) ->
             )
 
         except genai_errors.ServerError as e:
-            wait = 60 
+            tentativas_503 += 1
+            wait = min(45, 8 * tentativas_503)
             print(f"⚠️ Servidor ocupado (503). Aguardando {wait}s para tentar novamente...")
             time.sleep(wait)
             continue
@@ -408,21 +423,21 @@ def gerar_devocional(client: genai.Client, cursor: sqlite3.Cursor, data: str) ->
         print(text)
         print("=== TEXTO GERADO PELO GEMINI (FIM) ===")
 
+        text = normalizar_formato(text)
         valido, erro = validar_formato_devocional(text)
         if not valido:
-            print(f"⚠️ Formato inválido: {erro}. Tentando novamente ({tentativa + 1}/8)...")
+            print(f"⚠️ Formato inválido: {erro}. Tentando novamente ({tentativa + 1}/{max_tentativas})...")
             continue
 
-        text = normalizar_formato(text)
         referencia = extrair_referencia(text)
 
         if ha_sobreposicao(cursor, referencia):
-            print(f"⚠️ Versículos com sobreposição: {referencia}. Tentando outro ({tentativa + 1}/8)...")
+            print(f"⚠️ Versículos com sobreposição: {referencia}. Tentando outro ({tentativa + 1}/{max_tentativas})...")
             continue
 
         hash_msg = hash_texto(text)
         if hash_ja_usado(cursor, hash_msg):
-            print(f"⚠️ Texto/contexto repetido (hash). Tentando outro ({tentativa + 1}/8)...")
+            print(f"⚠️ Texto/contexto repetido (hash). Tentando outro ({tentativa + 1}/{max_tentativas})...")
             continue
 
         return text, referencia
