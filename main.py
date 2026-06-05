@@ -178,6 +178,19 @@ def ja_enviado_hoje(cursor: sqlite3.Cursor, hoje: str) -> bool:
     cursor.execute("SELECT 1 FROM devocionais WHERE data = ?", (hoje,))
     return cursor.fetchone() is not None
 
+def listar_referencias_recentes(cursor: sqlite3.Cursor, limite: int = 60) -> list[str]:
+    cursor.execute(
+        """
+        SELECT referencia
+        FROM devocionais
+        WHERE referencia IS NOT NULL AND TRIM(referencia) != ''
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (limite,),
+    )
+    return [row[0] for row in cursor.fetchall() if row and row[0]]
+
 def extrair_referencia(texto: str) -> str:
     linhas = texto.splitlines()
     encontrou_versiculos = False
@@ -290,18 +303,44 @@ def normalizar_formato(texto: str) -> str:
                 linhas_normalizadas.insert(i, "*[VERSÍCULOS]*")
                 break
 
+    if "*[CONTEXTO]*" not in linhas_normalizadas and "*[PARA PENSAR]*" in linhas_normalizadas:
+        idx_para_pensar = linhas_normalizadas.index("*[PARA PENSAR]*")
+        idx_ref = next((i for i, line in enumerate(linhas_normalizadas) if _eh_linha_referencia_biblica(line)), -1)
+
+        if idx_ref >= 0 and idx_ref < idx_para_pensar:
+            for i in range(idx_ref + 1, idx_para_pensar):
+                line = linhas_normalizadas[i].strip()
+                if not line:
+                    continue
+                if re.match(r"^\d+\s*-?\s+", line):
+                    continue
+                linhas_normalizadas.insert(i, "*[CONTEXTO]*")
+                break
+
     return "\n".join(linhas_normalizadas)
+
+def _erro_eh_quota_excedida(err: Exception) -> bool:
+    msg = str(err).lower()
+    return "429" in msg or "resource_exhausted" in msg or "quota exceeded" in msg
 
 def gerar_devocional(client: genai.Client, cursor: sqlite3.Cursor, data: str) -> tuple[str, str]:
     modelos = [m.strip() for m in GEMINI_MODELS.split(",") if m.strip()]
     if not modelos:
         modelos = ["gemini-3.5-flash"]
 
+    referencias_recentes = listar_referencias_recentes(cursor, limite=60)
+    bloqueio_referencias = "\n".join(f"- {r}" for r in referencias_recentes)
+
     max_tentativas = 12
     tentativas_503 = 0
+    modelos_sem_quota: set[str] = set()
 
     for tentativa in range(max_tentativas):
-        model = modelos[min(tentativa, len(modelos) - 1)]
+        modelos_disponiveis = [m for m in modelos if m not in modelos_sem_quota]
+        if not modelos_disponiveis:
+            raise RuntimeError("Sem quota disponível nos modelos configurados do Gemini. Ajuste GEMINI_MODELS ou cota/faturamento.")
+
+        model = modelos_disponiveis[tentativa % len(modelos_disponiveis)]
 
         try:
             response = client.models.generate_content(
@@ -360,6 +399,10 @@ def gerar_devocional(client: genai.Client, cursor: sqlite3.Cursor, data: str) ->
                 - DIVERSIFIQUE: Explore toda a Bíblia. Use passagens do Antigo e Novo Testamentos que tragam lições sobre caráter, relacionamento com Deus, santidade, humildade, perdão, etc.
                 - VERSÃO PADRÃO: Use sempre a NVI (Nova Versão Internacional) como base.
 
+                1.1 RESTRIÇÃO DE REFERÊNCIAS JÁ USADAS (OBRIGATÓRIO)
+                Não use nenhuma referência desta lista (inclusive variações de formatação ou pluralização do livro):
+                {bloqueio_referencias or "- (nenhuma referência bloqueada)"}
+
                 2. FORMATAÇÃO DE SAÍDA (SIGA EXATAMENTE ESTA ORDEM, SEM TÍTULOS EXTRA):
 
                 [VERSÍCULOS]
@@ -406,6 +449,11 @@ def gerar_devocional(client: genai.Client, cursor: sqlite3.Cursor, data: str) ->
             time.sleep(wait)
             continue
         except Exception as e:
+            if _erro_eh_quota_excedida(e):
+                modelos_sem_quota.add(model)
+                print(f"⚠️ Quota esgotada para o modelo {model}. Tentando outro modelo...")
+                continue
+
             # qualquer outro erro: também tenta mais uma vez, mas sem loop infinito
             wait = min(30, 2 ** tentativa) + random.uniform(0, 1.0)
             print(f"⚠️ Erro inesperado no Gemini: {e}. Retry em {wait:.1f}s...")
