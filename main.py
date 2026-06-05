@@ -22,6 +22,7 @@ GROUP_ID = os.getenv("GROUP_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT")
 GEMINI_LOCATION = os.getenv("GEMINI_LOCATION", "global")
+GEMINI_MODELS = os.getenv("GEMINI_MODELS", "gemini-3.5-flash,gemini-2.5-flash")
 TEST_MODE = os.getenv("TEST_MODE", "0") == "1"
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -269,11 +270,9 @@ def normalizar_formato(texto: str) -> str:
     return "\n".join(linhas_normalizadas)
 
 def gerar_devocional(client: genai.Client, cursor: sqlite3.Cursor, data: str) -> tuple[str, str]:
-    modelos = [
-        "gemini-3.5-flash",
-        "gemini-2.5-flash",
-        "gemini-2.5-pro",
-    ]
+    modelos = [m.strip() for m in GEMINI_MODELS.split(",") if m.strip()]
+    if not modelos:
+        modelos = ["gemini-3.5-flash"]
 
     for tentativa in range(8):
         model = modelos[min(tentativa, len(modelos) - 1)]
