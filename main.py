@@ -32,14 +32,24 @@ SEND_STATUS_PATH = BASE_DIR / "send_status.json"
 NODE_SENDER_PATH = BASE_DIR / "index-send-message.ts"
 
 def criar_cliente_genai() -> genai.Client:
-    usar_vertex = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "0") == "1"
+    usar_vertex_env = os.getenv("GOOGLE_GENAI_USE_VERTEXAI")
     project = os.getenv("GOOGLE_CLOUD_PROJECT")
+    em_github_actions = os.getenv("GITHUB_ACTIONS", "false").lower() == "true"
 
-    if usar_vertex or project:
+    if usar_vertex_env is None:
+        # Em CI, evita depender de ADC por engano quando só o project foi definido.
+        usar_vertex = bool(project) and not em_github_actions
+    else:
+        usar_vertex = usar_vertex_env == "1"
+
+    if usar_vertex:
         project = project or require_env("GOOGLE_CLOUD_PROJECT")
         location = os.getenv("GOOGLE_CLOUD_LOCATION", GEMINI_LOCATION)
         print(f"ℹ️ Usando Vertex AI em location={location}")
         return genai.Client(vertexai=True, project=project, location=location)
+
+    if project and em_github_actions:
+        print("ℹ️ GOOGLE_CLOUD_PROJECT definido no CI sem GOOGLE_GENAI_USE_VERTEXAI=1; usando GEMINI_API_KEY")
 
     print("ℹ️ Usando Gemini Developer API (GEMINI_API_KEY)")
     api_key = require_env("GEMINI_API_KEY")
