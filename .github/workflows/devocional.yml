@@ -64,6 +64,7 @@ jobs:
         run: |
           echo "GROUP_ID=${GROUP_ID}" > .env
           echo "GEMINI_API_KEY=${GEMINI_API_KEY}" >> .env
+          echo "GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT}" >> .env
           cat .env | sed 's/=.*/=***/'
 
       - name: Restaurar auth da branch auth
