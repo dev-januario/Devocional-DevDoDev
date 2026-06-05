@@ -20,7 +20,7 @@ load_dotenv(override=False)
 
 GROUP_ID = os.getenv("GROUP_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT")
+GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT", "gen-lang-client-0076088502")
 GEMINI_LOCATION = os.getenv("GEMINI_LOCATION", "global")
 GEMINI_MODELS = os.getenv("GEMINI_MODELS", "gemini-3.5-flash,gemini-2.5-flash")
 TEST_MODE = os.getenv("TEST_MODE", "0") == "1"
