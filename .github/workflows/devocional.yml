@@ -2,7 +2,7 @@ name: Devocional - Dev Do Dev - Envio Diário
 
 on:
   schedule:
-    - cron: '30 9 * * *'
+    - cron: '00 3 * * *'
   workflow_dispatch:
   push:
     branches:
