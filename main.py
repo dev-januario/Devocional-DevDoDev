@@ -2,6 +2,7 @@ import os
 import sqlite3
 import re
 import json
+import sys
 import unicodedata
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +16,12 @@ import hashlib
 import random
 
 ssl._create_default_https_context = ssl._create_unverified_context
+
+# Permite também `python3 main.py TEST_MODE=1` além do padrão `TEST_MODE=1 python3 main.py`
+for _arg in sys.argv[1:]:
+    if "=" in _arg:
+        _chave, _valor = _arg.split("=", 1)
+        os.environ[_chave] = _valor
 
 load_dotenv(override=False)
 
@@ -191,132 +198,49 @@ def listar_referencias_recentes(cursor: sqlite3.Cursor, limite: int = 60) -> lis
     )
     return [row[0] for row in cursor.fetchall() if row and row[0]]
 
+# Formato do prompt: "📖 *Livro Cap:Vini-Vfim (VERSÃO)*" — emoji e negrito são opcionais pois o Gemini nem sempre inclui
+_REF_EMOJI_PAT = re.compile(
+    r"^(?:📖\s*)?\*?(?P<livro>.+?)\s+(?P<cap>\d+)\s*:\s*(?P<versos>\d+(?:\s*-\s*\d+)?)\s*\((?P<versao>[^)]+)\)\*?\s*$"
+)
+
 def extrair_referencia(texto: str) -> str:
-    linhas = texto.splitlines()
-    encontrou_versiculos = False
-
-    for line in linhas:
-        line = line.strip()
-
-        if line in ("*[VERSÍCULOS]*", "[VERSÍCULOS]", "*[VERSICULOS]*", "[VERSICULOS]"):
-            encontrou_versiculos = True
-            continue
-
-        if encontrou_versiculos:
-            m = re.match(r"^\*(.+?)\s*\(([^)]+)\)\*$", line)
-            if m:
-                ref = m.group(1).strip()
-                versao = m.group(2).strip()
-                if re.search(r"\d+\s*:\s*\d+", ref):
-                    return f"{ref} ({versao})"
-
-            m2 = re.match(r"^(.+?)\s+(\d+)\s*:\s*(\d+(?:\s*-\s*\d+)?)\s*\(([^)]+)\)\s*$", line)
-            if m2:
-                livro = m2.group(1).strip()
-                cap = m2.group(2).strip()
-                versos = m2.group(3).strip()
-                versao = m2.group(4).strip()
-                return f"{livro} {cap}:{versos} ({versao})"
-
-            m3 = re.match(r"^\*\[\s*(.+?)\s*\]\s*\(\s*([^)]+)\s*\)\*$", line)
-            if m3:
-                ref = m3.group(1).strip()
-                versao = m3.group(2).strip()
-                if re.search(r"\d+\s*:\s*\d+", ref):
-                    return f"{ref} ({versao})"
-
-            if re.match(r"^\d+\s*-\s*.+", line):
-                continue
+    for line in texto.splitlines():
+        m = _REF_EMOJI_PAT.match(line.strip())
+        if m:
+            livro = m.group("livro").strip()
+            cap = m.group("cap").strip()
+            versos = re.sub(r"\s*-\s*", "-", m.group("versos").strip())
+            versao = m.group("versao").strip()
+            return f"{livro} {cap}:{versos} ({versao})"
 
     raise RuntimeError("Não foi possível extrair a referência bíblica do texto.")
 
+_REFLEXAO_PAT = re.compile(r"^(?:[📝🧠]\s*)?\*?Reflex[aã]o\*?\s*:?\s*$", flags=re.IGNORECASE)
+_ORACAO_PAT = re.compile(r"^(?:🙏\s*)?\*?Ora[cç][aã]o\*?\s*:?\s*$", flags=re.IGNORECASE)
+
 def validar_formato_devocional(texto: str) -> tuple[bool, str]:
-    linhas = texto.splitlines()
+    linhas = [line.strip() for line in texto.splitlines()]
 
-    tem_versiculos = False
-    for line in linhas[:5]:
-        line_clean = line.strip()
-        if line_clean in ("*[VERSÍCULOS]*", "[VERSÍCULOS]", "*[VERSICULOS]*", "[VERSICULOS]"):
-            tem_versiculos = True
-            break
-    if not tem_versiculos:
-        return False, "Falta a seção [VERSÍCULOS] no início"
-
-    # Regex aceita: book opcional com número ("2 Timóteo"), colchetes ao redor
-    # do nome ("[Gênesis]") e colchetes nos versículos ("[1]-[4]")
-    _REF_PAT = re.compile(
-        r"^\*?\[?(\d+\s+)?[A-Za-zÀ-ú\s]+\]?\s*\d+\s*:\s*\[?\d+\]?(-\[?\d+\]?)?\s*\([^)]+\)\*?$"
-    )
-    referencias_encontradas = []
-    for line in linhas:
-        line = line.strip()
-        if _REF_PAT.match(line):
-            referencias_encontradas.append(line)
-
+    referencias_encontradas = [line for line in linhas if _eh_linha_referencia_biblica(line)]
     if len(referencias_encontradas) == 0:
-        return False, "Nenhuma referência bíblica encontrada"
+        return False, "Nenhuma referência bíblica encontrada (linha \"Livro Cap:V-V (VERSÃO)\" ausente)"
     if len(referencias_encontradas) > 1:
-        return False, f"Múltiplas traduções detectadas! Encontrei {len(referencias_encontradas)} referências."
+        return False, f"Múltiplas referências detectadas! Encontrei {len(referencias_encontradas)} referências."
 
-    tem_contexto = any(line.strip() in ("*[CONTEXTO]*", "[CONTEXTO]") for line in linhas)
-    if not tem_contexto:
-        return False, "Falta a seção [CONTEXTO]"
+    if not any(_REFLEXAO_PAT.match(line) for line in linhas):
+        return False, "Falta a seção Reflexão"
 
-    tem_pensar = any(line.strip() in ("*[PARA PENSAR]*", "[PARA PENSAR]") for line in linhas)
-    if not tem_pensar:
-        return False, "Falta a seção [PARA PENSAR]"
+    if not any(_ORACAO_PAT.match(line) for line in linhas):
+        return False, "Falta a seção Oração"
 
     return True, "OK"
 
 def _eh_linha_referencia_biblica(line: str) -> bool:
-    line_limpa = line.strip().strip("*").strip()
-    return bool(re.match(
-        r"^\[?(\d+\s+)?[A-Za-zÀ-ú\s]+\]?\s*\d+\s*:\s*\[?\d+\]?(-\[?\d+\]?)?\s*\([^)]+\)$",
-        line_limpa,
-    ))
+    return bool(_REF_EMOJI_PAT.match(line.strip()))
 
 def normalizar_formato(texto: str) -> str:
-    linhas = texto.splitlines()
-    linhas_normalizadas = []
-
-    for line in linhas:
-        line_stripped = line.strip()
-        line_sem_asteriscos = line_stripped.strip("*").strip()
-
-        if re.match(r"^\[?\s*VERS[ÍI]CULOS\s*\]?$", line_sem_asteriscos, flags=re.IGNORECASE):
-            linhas_normalizadas.append("*[VERSÍCULOS]*")
-        elif re.match(r"^\[?\s*CONTEXTO\s*\]?$", line_sem_asteriscos, flags=re.IGNORECASE):
-            linhas_normalizadas.append("*[CONTEXTO]*")
-        elif re.match(r"^\[?\s*PARA\s+PENSAR\s*\]?$", line_sem_asteriscos, flags=re.IGNORECASE):
-            linhas_normalizadas.append("*[PARA PENSAR]*")
-        elif _eh_linha_referencia_biblica(line_stripped):
-            # Remove colchetes do nome do livro e dos versículos antes de armazenar
-            linha_limpa = re.sub(r'\[(\d+)\]', r'\1', line_sem_asteriscos)       # [4] → 4
-            linha_limpa = re.sub(r'\[([A-Za-zÀ-ú0-9\s]+)\]', r'\1', linha_limpa).strip()  # [Gênesis] → Gênesis
-            linhas_normalizadas.append(f"*{linha_limpa}*")
-        else:
-            linhas_normalizadas.append(line)
-
-    if "*[VERSÍCULOS]*" not in linhas_normalizadas:
-        for i, line in enumerate(linhas_normalizadas):
-            if _eh_linha_referencia_biblica(line):
-                linhas_normalizadas.insert(i, "*[VERSÍCULOS]*")
-                break
-
-    if "*[CONTEXTO]*" not in linhas_normalizadas and "*[PARA PENSAR]*" in linhas_normalizadas:
-        idx_para_pensar = linhas_normalizadas.index("*[PARA PENSAR]*")
-        idx_ref = next((i for i, line in enumerate(linhas_normalizadas) if _eh_linha_referencia_biblica(line)), -1)
-
-        if idx_ref >= 0 and idx_ref < idx_para_pensar:
-            for i in range(idx_ref + 1, idx_para_pensar):
-                line = linhas_normalizadas[i].strip()
-                if not line:
-                    continue
-                if re.match(r"^\d+\s*-?\s+", line):
-                    continue
-                linhas_normalizadas.insert(i, "*[CONTEXTO]*")
-                break
-
+    # Remove indentação acidental (herdada do template do prompt) linha a linha
+    linhas_normalizadas = [line.strip() for line in texto.splitlines()]
     return "\n".join(linhas_normalizadas)
 
 def _erro_eh_quota_excedida(err: Exception) -> bool:
@@ -346,100 +270,78 @@ def gerar_devocional(client: genai.Client, cursor: sqlite3.Cursor, data: str) ->
             response = client.models.generate_content(
                 model=model,
                 contents=f"""
-                Hoje é {data}. Com base na data e nas instruções abaixo, escreva um devocional cristão inédito, completo e transformador.
+        Hoje é {data}.
 
-                SUA IDENTIDADE:
-                Você é um escritor espiritual versátil, capacitado pelo Espírito Santo para comunicar a verdade bíblica de forma adequada a cada necessidade. Sua voz se adapta: ora com a firmeza de um profeta que exorta, ora com a ternura de um pastor que acolhe, ora com a sabedoria de um mestre que ensina. Seu objetivo é sempre edificar, conduzindo o leitor à graça e à transformação por meio das Escrituras, sem jamais impor opiniões pessoais.
+        Você é um escritor cristão comprometido com a fidelidade bíblica. Escreva um devocional inédito, curto, acolhedor e edificante, baseado exclusivamente nas Escrituras.
 
-                OBJETIVO DO DEVOCIONAL:
-                Gerar uma reflexão que promova mudança interior e transformação de vida. O devocional deve atender ao tema escolhido, proporcionando ao leitor: conforto, desafio, ensino, cura, direção ou encorajamento, sempre baseado na Palavra. O leitor deve terminar a leitura sentindo-se acolhido (quando o tema pede consolo) ou desafiado (quando o tema pede correção), mas sempre amado e conduzido pela graça.
+        ## Objetivo
+        Gerar um devocional que possa ser lido em aproximadamente 1 minuto, transmitindo uma única mensagem clara e prática.
 
-                ==================================================
-                DIRETRIZES OBRIGATÓRIAS
-                ==================================================
+        ## Escolha da passagem
+        - Escolha uma única passagem bíblica coerente com o tema.
+        - Utilize sempre a versão NVI.
+        - O contexto da passagem deve ser respeitado; nunca utilize versículos fora do seu sentido original.
+        - Alterne entre Antigo e Novo Testamento.
+        - Diversifique os temas ao longo dos dias.
 
-                1. TEMA DO DEVOCIONAL (ESCOLHA UM):
-                Cada devocional deve abordar um tema principal da lista abaixo. Alterne entre eles para garantir diversidade.
-                - Autorreflexão / Correção
-                - Consolo / Cura emocional
-                - Encorajamento / Força
-                - Narrativas (Histórias)
-                - Ensino / Sabedoria prática
-                - Mandamentos / Direção de Deus
-                - Relacionamento com Deus (oração e intimidade)
-                - Fé / Confiança
-                - Propósito / Chamado
-                - Perseverança / Processo
-                - Batalha espiritual
-                - Gratidão / Louvor
+        ### Temas possíveis
+        Escolha apenas um:
+        - Autorreflexão
+        - Consolo
+        - Encorajamento
+        - Sabedoria prática
+        - Fé
+        - Oração
+        - Perseverança
+        - Gratidão
+        - Santidade
+        - Propósito
+        - Perdão
+        - Esperança
 
-                2. TOM E LINGUAGEM ADAPTADOS AO TEMA:
-                - Se o tema for **Consolo / Cura emocional**, use linguagem suave, acolhedora, empática. Foque na graça, no descanso em Deus, na compaixão.
-                - Se o tema for **Autorreflexão / Correção**, use linguagem direta, mas amorosa. Confronte com verdade, mas sempre com esperança e propósito restaurador.
-                - Se o tema for **Encorajamento / Força**, use tom motivador, firme, que inspire coragem e confiança em Deus.
-                - Se o tema for **Narrativas**, conte uma história bíblica ou cotidiana de forma envolvente, extraindo lições claras.
-                - Se o tema for **Ensino / Sabedoria prática**, seja didático, claro, explicando princípios bíblicos aplicáveis ao dia a dia.
-                - Se o tema for **Mandamentos / Direção de Deus**, aborde com reverência e clareza, mostrando o propósito dos mandamentos como caminho de vida.
-                - Se o tema for **Relacionamento com Deus**, use tom íntimo, pessoal, como quem conversa com um amigo.
-                - Se o tema for **Fé / Confiança**, inspire segurança, destacando a fidelidade de Deus.
-                - Se o tema for **Propósito / Chamado**, use tom desafiador e inspirador, que desperte visão.
-                - Se o tema for **Perseverança / Processo**, use tom encorajador e realista, valorizando a jornada.
-                - Se o tema for **Batalha espiritual**, use tom de autoridade, mas sem alarmismo, mostrando a vitória em Cristo.
-                - Se o tema for **Gratidão / Louvor**, use tom alegre, celebrativo, conduzindo à adoração.
+        ### Referências proibidas
+        Não utilize nenhuma destas referências:
 
-                - Em todos os casos, a linguagem deve ser acessível, natural, como uma conversa íntima com Deus. Evite tom robótico, repetitivo ou genérico.
+        {bloqueio_referencias or "- Nenhuma"}
 
-                ==================================================
-                INSTRUÇÕES DE ESTRUTURA E CONTEÚDO
-                ==================================================
+        ## Estilo
+        - Linguagem simples, natural e acolhedora.
+        - Escreva como quem conversa com um irmão na fé.
+        - Evite clichês, frases de efeito e repetições.
+        - Não faça promessas que a Bíblia não faz.
+        - Toda aplicação deve nascer do texto bíblico.
+        - Nunca invente informações sobre o contexto da passagem.
 
-                1. ESCOLHA DA PASSAGEM:
-                - Escolha uma passagem coesa (um ou mais versículos) que se conecte diretamente ao tema escolhido.
-                - CONTEXTO É TUDO. A passagem deve fazer sentido por si só. Evite versículos isolados que possam ser mal interpretados.
-                - DIVERSIFIQUE: Explore toda a Bíblia. Use passagens do Antigo e Novo Testamentos que tragam lições sobre caráter, relacionamento com Deus, santidade, humildade, perdão, etc.
-                - VERSÃO PADRÃO: Use sempre a NVI (Nova Versão Internacional) como base.
+        ## Formato (SIGA EXATAMENTE)
 
-                1.1 RESTRIÇÃO DE REFERÊNCIAS JÁ USADAS (OBRIGATÓRIO)
-                Não use nenhuma referência desta lista (inclusive variações de formatação ou pluralização do livro):
-                {bloqueio_referencias or "- (nenhuma referência bloqueada)"}
+        Olá, vamos à Palavra de hoje! 🙏
 
-                2. FORMATAÇÃO DE SAÍDA (SIGA EXATAMENTE ESTA ORDEM, SEM TÍTULOS EXTRA):
+        📖 *[Livro] [Capítulo]:[V_inicial]-[V_final] (NVI)*
 
-                [VERSÍCULOS]
+        > [número] "[texto do versículo]"
+        > [número] "[texto do versículo]"
+        (uma linha de citação por versículo, sempre precedida do seu número, para facilitar identificar qual versículo está sendo lido)
 
-                [Nome do Livro] [Cap]:[V_ini]-[V_fim] (NVI)
+        🧠 *Reflexão*
 
-                [numero] - [texto do versículo]
-                [numero] - [texto do versículo]
-                ...
+        Escreva uma reflexão com no máximo 50 palavras.
+        Explique a principal verdade da passagem e uma aplicação prática para hoje.
 
-                [CONTEXTO]
-                [Aqui, escreva um ÚNICO parágrafo de 50 a 100 palavras.
-                Inicie contextualizando brevemente (quem fala, para quem, situação).
-                Em seguida, faça a reflexão principal. Seja didático: explique o que a passagem realmente significa. Vá "além da curva": qual é a verdade profunda, o princípio eterno por trás das palavras? Como essa verdade confronta ou acolhe o leitor conforme o tema? Conduza essa reflexão de forma lógica e clara.]
+        🙏 *Oração*
 
-                [PARA PENSAR]
+        Escreva uma oração com no máximo 30 palavras.
+        A oração deve estar relacionada diretamente à reflexão.
+        Termine a oração com "Amém." seguido do emoji 🤍.
 
-                [1. Pergunta de autorreflexão (20 a 30 palavras):
-                - Deve ser específica, pessoal e confrontadora.
-                - Deve levar o leitor a identificar algo real na própria vida.
-                - Evite perguntas genéricas como “Será que você…” ou “Você já parou para pensar…”.
-                - Prefira perguntas que comecem com “O que”, “Onde”, “Qual área”, “Quando foi a última vez…”.
-                - A pergunta deve exigir uma resposta honesta e prática.
-                - Para temas de consolo ou cura, a pergunta pode ser mais suave, mas ainda pessoal e reflexiva.]
-
-                ==================================================
-                DIRETRIZES ESSENCIAIS DE TOM E CONTEÚDO
-                ==================================================
-                - Seja Adaptável: Ajuste sua voz ao tema. Para correção, seja firme mas amoroso; para consolo, seja suave e acolhedor.
-                - Seja Didático e Claro: Explique o texto como um mestre paciente. Garanta que o entendimento da mensagem central seja inevitável.
-                - Foque na Graça Transformadora: Nunca apresente a lei como fim; sempre aponte para o perdão e o poder habilitador do Espírito Santo, mesmo em temas de correção.
-                - Seja Amoroso, mas Direto Quando Necessário: Em temas de confronto, fale a verdade com amor (Efésios 4:15), sem amenizar o peso, mas também sem esmagar.
-                - Seja um Mestre "Fora da Curva": Não se contente com a interpretação superficial. Pergunte-se: "Qual o princípio eterno aqui? Como isso se manifesta na vida moderna? Que área confortável da minha vida essa palavra desafia ou acolhe?".
-                - Baseie Tudo na Bíblia: Toda reflexão deve fluir diretamente da explicação do texto bíblico. Nada de achismos.
-
-                PALAVRA FINAL: Gere um devocional que seja um encontro transformador com a Palavra, adequado ao tema escolhido. Que ele eduque a mente, convença o coração (se necessário) ou console a alma, sempre mobilizando a vontade em direção a uma vida que mais se assemelhe a Cristo.
-                """.strip(),
+        ## Restrições
+        - Não adicione títulos extras.
+        - Não escreva "Contexto", "Para pensar", "Mensagem" ou similares.
+        - Use apenas os emojis 🙏, 📖, 🧠 e 🤍, exatamente como no modelo acima.
+        - Use negrito (*texto*) na referência bíblica e nos títulos "Reflexão" e "Oração".
+        - Use "> " antes de cada linha de versículo (citação em bloco).
+        - Não ultrapasse os limites de palavras.
+        - A saída deve conter apenas o texto final do devocional.
+        """.strip(),
             )
 
         except genai_errors.ServerError as e:
@@ -515,6 +417,8 @@ def job_diario() -> None:
 
     client = criar_cliente_genai()
     hoje = datetime.now().strftime("%Y-%m-%d")
+    # Em TEST_MODE, usa uma "data" sintética pra não colidir com o registro real de hoje (UNIQUE)
+    data_registro = f"{hoje}-teste-{int(time.time())}" if TEST_MODE else hoje
 
     conn = sqlite3.connect(str(DB_PATH), timeout=30)
     conn.execute("PRAGMA journal_mode=WAL;")
@@ -530,15 +434,7 @@ def job_diario() -> None:
 
         devocional, referencia = gerar_devocional(client, cursor, hoje)
 
-        texto_final = f"""Olá, irmãos e irmãs!🙏
-
-Pare um instante — há uma Palavra de Deus para vocês hoje:
-
-{devocional}
-
-Reserve um momento pra meditar.
-Deus é contigo.🤍
-""".strip()
+        texto_final = f"""{devocional}""".strip()
 
         dados = parsear_referencia(referencia)
         hash_msg = hash_texto(devocional)
@@ -548,7 +444,7 @@ Deus é contigo.🤍
             cursor.execute(
                 """INSERT INTO devocionais (data, referencia, mensagem, hash_mensagem)
                 VALUES (?, ?, ?, ?)""",
-                (hoje, referencia, texto_final, hash_msg),
+                (data_registro, referencia, texto_final, hash_msg),
             )
             conn.commit()
         else:
@@ -557,7 +453,7 @@ Deus é contigo.🤍
                 """INSERT INTO devocionais
                 (data, referencia, mensagem, hash_mensagem, livro, capitulo, verso_inicial, verso_final)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (hoje, referencia, texto_final, hash_msg,
+                (data_registro, referencia, texto_final, hash_msg,
                  livro_normalizado, dados['capitulo'], dados['verso_inicial'], dados['verso_final'])
             )
             conn.commit()
