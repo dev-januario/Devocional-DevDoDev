@@ -331,7 +331,7 @@ def gerar_devocional(client: genai.Client, cursor: sqlite3.Cursor, data: str) ->
 
         Escreva uma oração com no máximo 30 palavras.
         A oração deve estar relacionada diretamente à reflexão.
-        Termine a oração com "Amém." seguido do emoji 🤍.
+        Termine a oração com "Em nome de Jesus, Amém!" seguido do emoji 🤍.
 
         ## Restrições
         - Não adicione títulos extras.
