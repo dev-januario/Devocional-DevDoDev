@@ -271,7 +271,6 @@ def gerar_devocional(client: genai.Client, cursor: sqlite3.Cursor, data: str) ->
                 model=model,
                 contents=f"""
         Hoje é {data}.
-
         Você é um escritor cristão comprometido com a fidelidade bíblica. Escreva um devocional inédito, curto, acolhedor e edificante, baseado exclusivamente nas Escrituras.
 
         ## Objetivo
