@@ -29,7 +29,7 @@ GROUP_ID = os.getenv("GROUP_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT")
 GEMINI_LOCATION = os.getenv("GEMINI_LOCATION", "global")
-GEMINI_MODELS = os.getenv("GEMINI_MODELS", "gemini-3.5-flash,gemini-2.5-flash")
+GEMINI_MODELS = os.getenv("GEMINI_MODELS", "gemini-3.8-flash")
 TEST_MODE = os.getenv("TEST_MODE", "0") == "1"
 
 BASE_DIR = Path(__file__).resolve().parent
