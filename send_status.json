@@ -1,6 +1,5 @@
 {
-  "success": true,
-  "timestamp": "2026-09-04T22:45:17.960Z",
-  "messageId": "3EB0663C9BC20154C31A79",
-  "remoteJid": "120363424073386097@g.us"
+  "success": false,
+  "timestamp": "2026-10-23T22:33:39.794Z",
+  "error": "ENOENT: no such file or directory, open 'outbox.txt'"
 }
