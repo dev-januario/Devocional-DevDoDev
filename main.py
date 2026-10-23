@@ -250,7 +250,7 @@ def _erro_eh_quota_excedida(err: Exception) -> bool:
 def gerar_devocional(client: genai.Client, cursor: sqlite3.Cursor, data: str) -> tuple[str, str]:
     modelos = [m.strip() for m in GEMINI_MODELS.split(",") if m.strip()]
     if not modelos:
-        modelos = ["gemini-3.5-flash"]
+        modelos = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-pro-preview"]
 
     referencias_recentes = listar_referencias_recentes(cursor, limite=60)
     bloqueio_referencias = "\n".join(f"- {r}" for r in referencias_recentes)
