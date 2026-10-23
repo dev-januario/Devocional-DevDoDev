@@ -49,7 +49,10 @@ jobs:
         continue-on-error: true
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          workflow: devocional.yml
+          workflow_search: true
+          workflow_conclusion: ""
+          search_artifacts: true
+          check_artifacts: true
           name: database
           path: ./backup
           if_no_artifact_found: warn

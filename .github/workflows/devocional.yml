@@ -73,11 +73,18 @@ jobs:
           git checkout origin/auth -- auth_info_baileys/
           echo "✅ Auth restaurado da branch auth"
 
-      - name: Baixar database.zip do último run
+      # IMPORTANTE: baixa o artifact 'database' MAIS RECENTE, de QUALQUER workflow
+      # (inclusive o reset-database.yml) e independente da conclusão (success/failure).
+      # Sem isso, o download pega o último run BEM-SUCEDIDO do devocional.yml e ignora
+      # o banco zerado pelo reset, fazendo o app 'ver' um banco antigo (versículos repetidos).
+      - name: Baixar database.zip mais recente (qualquer workflow/conclusão)
         uses: dawidd6/action-download-artifact@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          workflow: devocional.yml
+          workflow_search: true
+          workflow_conclusion: ""
+          search_artifacts: true
+          check_artifacts: true
           name: database
           path: .
           if_no_artifact_found: warn
@@ -90,6 +97,16 @@ jobs:
           else
             echo "Nenhum database.zip encontrado. Primeira execução?"
           fi
+          python - <<'PY'
+          import sqlite3, os
+          if os.path.exists("database.db"):
+              conn = sqlite3.connect("database.db")
+              n = conn.execute("SELECT COUNT(*) FROM devocionais").fetchone()[0]
+              conn.close()
+              print(f"📊 database.db carregado com {n} registro(s)")
+          else:
+              print("📊 database.db ausente (banco novo)")
+          PY
 
       - name: Executar script Python (gerar conteúdo)
         run: python main.py
@@ -150,8 +167,10 @@ jobs:
 
           git checkout ${{ github.ref_name }}
 
+      # 'always()' garante que o estado do banco seja persistido mesmo se a geração/envio
+      # falhar — assim o próximo run nunca perde registros já gravados.
       - name: Empacotar database.zip
-        if: success()
+        if: always()
         run: |
           if [ -f database.db ]; then
             zip database.zip database.db
